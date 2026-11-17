@@ -92,8 +92,35 @@ async def logout(response:Response):
 @app.get('/api/health')
 async def health(token=Depends(auth)):
     from backend.worker import runtime
-    import yt_dlp.version, imageio_ffmpeg
-    return {'yt_dlp':yt_dlp.version.__version__,'ffmpeg':Path(os.getenv('FFMPEG_PATH') or imageio_ffmpeg.get_ffmpeg_exe()).exists(),'deno':bool(runtime()),'configured':True}
+    import yt_dlp.version, imageio_ffmpeg, subprocess
+
+    deno_path = runtime()
+    deno_ok = False
+
+    if deno_path:
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [deno_path, "eval", "console.log('DENO_OK')"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            deno_ok = (
+                result.returncode == 0
+                and result.stdout.strip() == "DENO_OK"
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    return {
+        "yt_dlp": yt_dlp.version.__version__,
+        "ffmpeg": Path(
+            os.getenv("FFMPEG_PATH") or imageio_ffmpeg.get_ffmpeg_exe()
+        ).exists(),
+        "deno": deno_ok,
+        "configured": True
+    }
 
 async def spawn(*args):
     return await asyncio.create_subprocess_exec(sys.executable,str(ROOT/'worker.py'),*args,stdout=asyncio.subprocess.PIPE,stderr=None,start_new_session=os.name!='nt',env={**os.environ,'PYTHONPATH':os.pathsep.join([str(ROOT.parent),*[p for p in sys.path if p]])})
@@ -180,18 +207,3 @@ async def convert(body:Import,token=Depends(auth)):
                 if proc: await stop(proc)
                 shutil.rmtree(folder,ignore_errors=True)
     return StreamingResponse(stream(),media_type='application/x-ndjson',headers={'X-Accel-Buffering':'no'})
-
-import subprocess
-
-deno_path = runtime()
-try:
-    result = subprocess.run(
-        [deno_path, "eval", "console.log('DENO_OK')"],
-        capture_output=True,
-        text=True,
-        timeout=10
-    ) if deno_path else None
-    deno_ok = bool(result and result.returncode == 0
-                   and result.stdout.strip() == "DENO_OK")
-except (OSError, subprocess.TimeoutExpired):
-    deno_ok = False
