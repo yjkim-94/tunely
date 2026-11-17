@@ -180,3 +180,18 @@ async def convert(body:Import,token=Depends(auth)):
                 if proc: await stop(proc)
                 shutil.rmtree(folder,ignore_errors=True)
     return StreamingResponse(stream(),media_type='application/x-ndjson',headers={'X-Accel-Buffering':'no'})
+
+import subprocess
+
+deno_path = runtime()
+try:
+    result = subprocess.run(
+        [deno_path, "eval", "console.log('DENO_OK')"],
+        capture_output=True,
+        text=True,
+        timeout=10
+    ) if deno_path else None
+    deno_ok = bool(result and result.returncode == 0
+                   and result.stdout.strip() == "DENO_OK")
+except (OSError, subprocess.TimeoutExpired):
+    deno_ok = False
