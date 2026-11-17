@@ -21,7 +21,7 @@ class Logger:
 
 def run():
     mode,target=sys.argv[1:3]
-    opts={'quiet':True,'no_warnings':True,'logger':Logger(),'noplaylist':True,'socket_timeout':15,'retries':1,'fragment_retries':1,'cachedir':False,'js_runtimes':{'deno':{'path':runtime()}} if runtime() else {}}
+    opts={'quiet':True,'no_warnings':True,'logger':Logger(),'noplaylist':True,'socket_timeout':15,'retries':1,'fragment_retries':1,'cachedir':False,'remote_components':['ejs:github'],'js_runtimes':{'deno':{'path':runtime()}} if runtime() else {}}
     if mode=='search':
         opts.update({'extract_flat':'in_playlist','skip_download':True,'ignoreerrors':False})
         with yt_dlp.YoutubeDL(opts) as y:
