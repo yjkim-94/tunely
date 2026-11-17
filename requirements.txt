@@ -1,0 +1,2 @@
+# Exact runtime dependency versions verified for MVP 0.1.0.
+-r requirements-lock.txt
