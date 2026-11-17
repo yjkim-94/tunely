@@ -96,7 +96,7 @@ async def health(token=Depends(auth)):
     return {'yt_dlp':yt_dlp.version.__version__,'ffmpeg':Path(os.getenv('FFMPEG_PATH') or imageio_ffmpeg.get_ffmpeg_exe()).exists(),'deno':bool(runtime()),'configured':True}
 
 async def spawn(*args):
-    return await asyncio.create_subprocess_exec(sys.executable,str(ROOT/'worker.py'),*args,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,start_new_session=os.name!='nt',env={**os.environ,'PYTHONPATH':os.pathsep.join([str(ROOT.parent),*[p for p in sys.path if p]])})
+    return await asyncio.create_subprocess_exec(sys.executable,str(ROOT/'worker.py'),*args,stdout=asyncio.subprocess.PIPE,stderr=None,start_new_session=os.name!='nt',env={**os.environ,'PYTHONPATH':os.pathsep.join([str(ROOT.parent),*[p for p in sys.path if p]])})
 
 async def stop(proc):
     if proc.returncode is None:
