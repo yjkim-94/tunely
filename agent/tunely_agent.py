@@ -176,7 +176,9 @@ def process(job, folder):
     report('업로드', 100, True, f'조각 {parts}/{parts} · 전체 {size / 2**20:.1f} MB')
     call(f'jobs/{jid}/complete', {'title': info.get('title') or job['title'],
                                   'artist': info.get('channel') or info.get('uploader') or job['artist'] or '알 수 없음',
-                                  'duration': int(info.get('duration') or job['duration'] or 0)})
+                                  'duration': int(info.get('duration') or job['duration'] or 0),
+                                  # 'aac' = YouTube's AAC stream copied as is; otherwise the codec we converted from.
+                                  'source_codec': 'aac' if copy else (info.get('acodec') or 'unknown').split('.')[0][:20]})
     return size, parts
 
 

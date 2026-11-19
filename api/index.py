@@ -33,6 +33,7 @@ class Complete(BaseModel):
     title:str=Field(max_length=300)
     artist:str=Field(max_length=200)
     duration:int=Field(ge=0,le=86400)
+    source_codec:str|None=Field(default=None,max_length=20)
 class Fail(BaseModel): error:str=Field(max_length=500)
 class Uploads(BaseModel):
     parts:int=Field(ge=1,le=40)
@@ -154,7 +155,7 @@ async def search(body:Search,request:Request,token=Depends(auth)):
 # Download queue. Windows PC agent does the YouTube work; Supabase holds the
 # queue (jobs table) and the transient files (transfers bucket).
 BUCKET='transfers'
-JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at,parts,size'
+JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at,parts,size,source_codec'
 AGENT_ONLINE=30
 RETENTION_DAYS=3
 
@@ -287,7 +288,7 @@ async def agent_progress(request:Request,id:str,body:Progress,_=Depends(agent)):
 @app.post('/api/agent/jobs/{id}/complete')
 async def agent_complete(request:Request,id:str,body:Complete,_=Depends(agent)):
     await agent_job(id);await touch_agent(request)
-    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'ready','title':body.title,'artist':body.artist,'duration':body.duration,'stage':'전송 대기','progress':100,'ready_at':'now'})
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'ready','title':body.title,'artist':body.artist,'duration':body.duration,'source_codec':body.source_codec,'stage':'전송 대기','progress':100,'ready_at':'now'})
     return {'ok':True}
 
 @app.post('/api/agent/jobs/{id}/fail')

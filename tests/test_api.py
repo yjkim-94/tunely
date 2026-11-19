@@ -64,6 +64,11 @@ class SecurityTests(unittest.TestCase):
    r=self.c.post('/api/search',json={'query':'lofi','sort':'views'})
    self.assertEqual(r.json()[0]['views'],123456);self.assertEqual(seen[-1],('search','lofi','views'))
    self.assertEqual(self.c.post('/api/search',json={'query':'lofi','sort':'random'}).status_code,422)
+ def test_agent_complete_records_source_codec(self):
+  fake=FakeSupabase(existing=[{'id':JOB}])
+  with patch('api.index.sb',fake):
+   self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/complete',json={'title':'t','artist':'a','duration':1,'source_codec':'aac'},headers=AGENT).status_code,200)
+  self.assertEqual([c for c in fake.calls if c[0]=='PATCH'][0][2]['json']['source_codec'],'aac')
  def test_agent_fail_strips_signed_urls(self):
   fake=FakeSupabase(existing=[{'id':JOB}])
   with patch('api.index.sb',fake):
