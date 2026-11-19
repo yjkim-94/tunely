@@ -1,6 +1,7 @@
 """Vercel Python Function + local Uvicorn entrypoint."""
-import asyncio, base64, contextlib, hashlib, hmac, json, os, re, secrets, shutil, signal, sys, tempfile, time
+import asyncio, contextlib, hashlib, hmac, json, os, re, secrets, signal, sys, time
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 from fastapi import FastAPI, HTTPException, Request, Response, Depends
 from fastapi.responses import StreamingResponse
@@ -16,7 +17,20 @@ ROOT=Path(__file__).resolve().parent.parent/'backend'
 
 class Login(BaseModel): password:str=Field(min_length=1,max_length=1024)
 class Search(BaseModel): query:str=Field(min_length=1,max_length=200)
-class Import(BaseModel): url:str=Field(max_length=2048); permitted:bool=False
+class JobIn(BaseModel):
+    url:str=Field(max_length=2048)
+    title:str=Field(default='',max_length=300)
+    artist:str=Field(default='',max_length=200)
+    duration:int=Field(default=0,ge=0,le=86400)
+    thumbnail:str|None=Field(default=None,max_length=2048)
+class Progress(BaseModel):
+    stage:str=Field(max_length=40)
+    percent:int|None=Field(default=None,ge=0,le=100)
+class Complete(BaseModel):
+    title:str=Field(max_length=300)
+    artist:str=Field(max_length=200)
+    duration:int=Field(ge=0,le=86400)
+class Fail(BaseModel): error:str=Field(max_length=500)
 
 def configured():
     if not os.getenv('APP_PASSWORD_HASH') or len(os.getenv('SESSION_SECRET',''))<32: raise HTTPException(503,'서버 비밀번호 설정이 필요합니다.')
@@ -91,36 +105,10 @@ async def logout(response:Response):
 
 @app.get('/api/health')
 async def health(token=Depends(auth)):
-    from backend.worker import runtime
-    import yt_dlp.version, imageio_ffmpeg, subprocess
-
-    deno_path = runtime()
-    deno_ok = False
-
-    if deno_path:
-        try:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                [deno_path, "eval", "console.log('DENO_OK')"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            deno_ok = (
-                result.returncode == 0
-                and result.stdout.strip() == "DENO_OK"
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
-    return {
-        "yt_dlp": yt_dlp.version.__version__,
-        "ffmpeg": Path(
-            os.getenv("FFMPEG_PATH") or imageio_ffmpeg.get_ffmpeg_exe()
-        ).exists(),
-        "deno": deno_ok,
-        "configured": True
-    }
+    import yt_dlp.version
+    seen=await agent_seen()
+    online=bool(seen) and time.time()-datetime.fromisoformat(seen).timestamp()<AGENT_ONLINE
+    return {'yt_dlp':yt_dlp.version.__version__,'agent_online':online,'agent_last_seen':seen,'configured':True}
 
 async def spawn(*args):
     return await asyncio.create_subprocess_exec(sys.executable,str(ROOT/'worker.py'),*args,stdout=asyncio.subprocess.PIPE,stderr=None,start_new_session=os.name!='nt',env={**os.environ,'PYTHONPATH':os.pathsep.join([str(ROOT.parent),*[p for p in sys.path if p]])})
@@ -156,54 +144,140 @@ async def search(body:Search,request:Request,token=Depends(auth)):
     except TimeoutError: raise HTTPException(504,'검색 시간이 초과되었습니다.')
     finally: await stop(proc)
 
-@app.post('/api/import/convert')
-async def convert(body:Import,token=Depends(auth)):
-    url=canonical_url(body.url)
-    if not body.permitted: raise HTTPException(400,'저장 권한을 확인해 주세요.')
-    rate('convert:'+token,10)
-    async def stream():
-        
-        # A previous hard-killed function cannot run finally; remove old orphan folders.
-        for stale in Path(tempfile.gettempdir()).glob('soriham-*'):
-            if stale.is_dir() and time.time()-stale.stat().st_mtime>3600:
-                shutil.rmtree(stale,ignore_errors=True)
-        folder=Path(tempfile.mkdtemp(prefix='soriham-'));proc=None
-        def line(**data): return json.dumps(data,ensure_ascii=False)+'\n'
-        try:
-            # Heartbeat starts immediately; whole request including transfer is bounded.
-            yield line(type='progress',stage='영상 확인',percent=None)
-            async with asyncio.timeout(275):
-                proc=await spawn('convert',url,str(folder));track=None
-                pending=asyncio.create_task(proc.stdout.readline())
-                try:
-                    while True:
-                        done,_=await asyncio.wait({pending},timeout=3)
-                        if not done:
-                            yield line(type='heartbeat');continue
-                        raw=pending.result()
-                        if not raw: break
-                        event=json.loads(raw)
-                        if event['type']=='ready': track=event['track']
-                        else: yield raw
-                        pending=asyncio.create_task(proc.stdout.readline())
-                    await proc.wait()
-                finally:
-                    if not pending.done(): pending.cancel()
-                if proc.returncode or not track: raise RuntimeError('YouTube 다운로드 또는 M4A 변환에 실패했습니다. 서버 접근 제한·인증 요구·지원 형식을 확인해 주세요.')
-                size=(folder/'audio.m4a').stat().st_size
-                yield line(type='progress',stage='iPhone으로 전송',percent=0,total=size)
-                with (folder/'audio.m4a').open('rb') as audio:
-                    sent=0
-                    while chunk:=audio.read(128*1024):
-                        sent+=len(chunk);yield line(type='audio',data=base64.b64encode(chunk).decode(),percent=round(sent/size*100));await asyncio.sleep(0)
-                yield line(type='done',track=track)
-        except TimeoutError: yield line(type='error',message='처리 시간이 초과되었습니다. 더 짧은 영상으로 다시 시도해 주세요.')
-        except asyncio.CancelledError: raise
-        except Exception as e: yield line(type='error',message=str(e) if isinstance(e,RuntimeError) else '오디오 처리 중 오류가 발생했습니다.')
-        finally:
-            # Shield cleanup from the streaming disconnect cancellation scope.
-            import anyio
-            with anyio.CancelScope(shield=True):
-                if proc: await stop(proc)
-                shutil.rmtree(folder,ignore_errors=True)
-    return StreamingResponse(stream(),media_type='application/x-ndjson',headers={'X-Accel-Buffering':'no'})
+# ---------------------------------------------------------------------------
+# Download queue. Windows PC agent does the YouTube work; Supabase holds the
+# queue (jobs table) and the transient files (transfers bucket).
+BUCKET='transfers'
+JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at'
+AGENT_ONLINE=30
+RETENTION_DAYS=3
+
+def supabase():
+    url=os.getenv('SUPABASE_URL','').rstrip('/');key=os.getenv('SUPABASE_SECRET_KEY','')
+    if not url or not key: raise HTTPException(503,'서버 저장소(Supabase) 설정이 필요합니다.')
+    import httpx
+    return httpx.AsyncClient(base_url=url,headers={'apikey':key,'Authorization':'Bearer '+key},timeout=15)
+
+async def sb(method,path,**kw):
+    async with supabase() as c:
+        r=await c.request(method,path,**kw)
+    if r.status_code>=400:
+        print('supabase',method,path,r.status_code,r.text[:300],file=sys.stderr,flush=True)
+        raise HTTPException(502,'서버 저장소 요청에 실패했습니다.')
+    return r.json() if r.content else None
+
+def files(job_id): return [f'{job_id}/audio.m4a',f'{job_id}/cover.jpg']
+
+async def signed_download(path):
+    data=await sb('POST',f'/storage/v1/object/sign/{BUCKET}/{path}',json={'expiresIn':900})
+    return os.getenv('SUPABASE_URL','').rstrip('/')+'/storage/v1'+data['signedURL']
+
+async def signed_upload(path):
+    data=await sb('POST',f'/storage/v1/object/upload/sign/{BUCKET}/{path}',headers={'x-upsert':'true'})
+    return os.getenv('SUPABASE_URL','').rstrip('/')+'/storage/v1'+data['url']
+
+async def remove_files(job_ids):
+    if job_ids: await sb('DELETE',f'/storage/v1/object/{BUCKET}',json={'prefixes':[p for j in job_ids for p in files(j)]})
+
+def job_id(value):
+    if not re.fullmatch(r'[0-9a-f-]{36}',value): raise HTTPException(404,'작업을 찾을 수 없습니다.')
+    return value
+
+async def agent_seen():
+    rows=await sb('GET','/rest/v1/agents',params={'select':'last_seen','order':'last_seen.desc','limit':'1'})
+    return rows[0]['last_seen'] if rows else None
+
+@app.post('/api/jobs')
+async def create_job(body:JobIn,token=Depends(auth)):
+    rate('jobs:'+token,60)
+    video=canonical_url(body.url).rsplit('=',1)[1]
+    existing=await sb('GET','/rest/v1/jobs',params={'select':JOB_FIELDS,'video_id':'eq.'+video,'status':'in.(queued,processing,ready)'})
+    if existing: return existing[0]
+    row={'video_id':video,'title':body.title or 'YouTube '+video,'artist':body.artist,'duration':body.duration,
+         'thumbnail':body.thumbnail if (body.thumbnail or '').startswith('https://') else f'https://i.ytimg.com/vi/{video}/hqdefault.jpg'}
+    rows=await sb('POST','/rest/v1/jobs',params={'select':JOB_FIELDS},json=row,headers={'Prefer':'return=representation'})
+    return rows[0]
+
+@app.get('/api/jobs')
+async def list_jobs(token=Depends(auth)):
+    rows=await sb('GET','/rest/v1/jobs',params={'select':JOB_FIELDS,'status':'in.(queued,processing,ready,failed)','order':'created_at.asc'})
+    for row in rows:
+        if row['status']=='ready':
+            row['audio_url'],row['cover_url']=[await signed_download(p) for p in files(row['id'])]
+    seen=await agent_seen()
+    online=bool(seen) and time.time()-datetime.fromisoformat(seen).timestamp()<AGENT_ONLINE
+    return {'jobs':rows,'agent':{'online':online,'last_seen':seen}}
+
+@app.post('/api/jobs/{id}/received')
+async def received(id:str,token=Depends(auth)):
+    id=job_id(id)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.ready'},json={'status':'received'})
+    await remove_files([id])
+    return {'ok':True}
+
+@app.post('/api/jobs/{id}/retry')
+async def retry(id:str,token=Depends(auth)):
+    id=job_id(id)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.failed'},json={'status':'queued','error':None,'progress':None,'stage':None})
+    return {'ok':True}
+
+@app.delete('/api/jobs/{id}')
+async def cancel_job(id:str,token=Depends(auth)):
+    id=job_id(id)
+    await sb('DELETE','/rest/v1/jobs',params={'id':'eq.'+id})
+    await remove_files([id])
+    return {'ok':True}
+
+def agent(request:Request):
+    expected=os.getenv('AGENT_TOKEN','')
+    given=request.headers.get('authorization','').removeprefix('Bearer ')
+    if len(expected)<32 or not hmac.compare_digest(given.encode(),expected.encode()): raise HTTPException(401,'에이전트 인증 실패')
+
+def agent_name(request):
+    return re.sub(r'[^\w.-]','',request.headers.get('x-agent-name','pc'))[:40] or 'pc'
+
+async def touch_agent(request):
+    await sb('POST','/rest/v1/agents',json={'id':agent_name(request),'last_seen':'now'},headers={'Prefer':'resolution=merge-duplicates'})
+
+async def agent_job(id,status='processing'):
+    rows=await sb('GET','/rest/v1/jobs',params={'select':'id','id':'eq.'+job_id(id),'status':'eq.'+status})
+    if not rows: raise HTTPException(409,'이미 취소되었거나 처리 중이 아닌 작업입니다.')
+
+@app.post('/api/agent/claim')
+async def claim(request:Request,_=Depends(agent)):
+    rows=await sb('POST','/rest/v1/rpc/claim_job',json={'agent':agent_name(request)})
+    if not rows: return {'job':None}
+    job=rows[0]
+    audio,cover=[await signed_upload(p) for p in files(job['id'])]
+    return {'job':{k:job[k] for k in ('id','video_id','title','artist','duration','thumbnail')}|{'url':'https://www.youtube.com/watch?v='+job['video_id'],'upload':{'audio':audio,'cover':cover}}}
+
+@app.post('/api/agent/jobs/{id}/progress')
+async def agent_progress(request:Request,id:str,body:Progress,_=Depends(agent)):
+    await agent_job(id);await touch_agent(request)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'stage':body.stage,'progress':body.percent})
+    return {'ok':True}
+
+@app.post('/api/agent/jobs/{id}/complete')
+async def agent_complete(request:Request,id:str,body:Complete,_=Depends(agent)):
+    await agent_job(id);await touch_agent(request)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'ready','title':body.title,'artist':body.artist,'duration':body.duration,'stage':'전송 대기','progress':100,'ready_at':'now'})
+    return {'ok':True}
+
+@app.post('/api/agent/jobs/{id}/fail')
+async def agent_fail(request:Request,id:str,body:Fail,_=Depends(agent)):
+    await agent_job(id);await touch_agent(request)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'failed','error':body.error,'stage':None})
+    await remove_files([id])
+    return {'ok':True}
+
+@app.get('/api/cron/cleanup')
+async def cleanup(request:Request):
+    secret=os.getenv('CRON_SECRET','')
+    if len(secret)<16 or not hmac.compare_digest(request.headers.get('authorization','').encode(),('Bearer '+secret).encode()): raise HTTPException(401)
+    cutoff=datetime.fromtimestamp(time.time()-RETENTION_DAYS*86400,timezone.utc).isoformat()
+    old=await sb('GET','/rest/v1/jobs',params={'select':'id','created_at':'lt.'+cutoff})
+    ids=[r['id'] for r in old]
+    for i in range(0,len(ids),50):
+        await remove_files(ids[i:i+50])
+        await sb('DELETE','/rest/v1/jobs',params={'id':'in.('+','.join(ids[i:i+50])+')'})
+    return {'deleted':len(ids)}
