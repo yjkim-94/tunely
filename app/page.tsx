@@ -34,6 +34,8 @@ import {
   removeTracks,
   setting,
   setSetting,
+  trackAudio,
+  trackSize,
   type Track,
   type Playlist,
 } from "./db";
@@ -50,9 +52,11 @@ type Job = {
   progress?: number | null;
   stage?: string | null;
   error?: string | null;
-  audio_url?: string;
+  size?: number | null;
+  audio_urls?: string[];
   cover_url?: string;
   receiving?: boolean;
+  receivePercent?: number;
   receiveError?: string;
 };
 type Saved = {
@@ -336,11 +340,18 @@ export default function Home() {
   useEffect(() => {
     if (!current || !audio.current) return;
     const a = audio.current;
-    if (blobUrl.current) URL.revokeObjectURL(blobUrl.current);
-    blobUrl.current = URL.createObjectURL(current.audio);
-    a.src = blobUrl.current;
-    a.playbackRate = savedRef.current.speed;
+    let alive = true;
+    void trackAudio(current)
+      .then((blob) => {
+        if (!alive) return;
+        if (blobUrl.current) URL.revokeObjectURL(blobUrl.current);
+        blobUrl.current = URL.createObjectURL(blob);
+        a.src = blobUrl.current;
+        a.playbackRate = savedRef.current.speed;
+      })
+      .catch((e) => setNotice(errorText(e)));
     return () => {
+      alive = false;
       a.pause();
     };
   }, [current?.id, auth, ready]);
@@ -512,7 +523,7 @@ export default function Home() {
   }
   const receive = useCallback(
     async (job: Job) => {
-      if (!job.audio_url || receivingRef.current.has(job.id)) return;
+      if (!job.audio_urls?.length || receivingRef.current.has(job.id)) return;
       receivingRef.current.add(job.id);
       const mark = (patch: Partial<Job>) =>
         setJobs((old) =>
@@ -521,18 +532,35 @@ export default function Home() {
       mark({ receiving: true, receiveError: undefined });
       try {
         if (!(await db.tracks.get(job.video_id))) {
-          const r = await fetch(job.audio_url, {
-            signal: AbortSignal.timeout(180000),
-          });
-          if (!r.ok) throw new Error(`음원을 받지 못했습니다. (${r.status})`);
-          const size = Number(r.headers.get("Content-Length") || 0);
-          if (size && navigator.storage?.estimate) {
+          const urls = job.audio_urls || [];
+          if (!urls.length) throw new Error("받을 음원이 없습니다.");
+          const total = job.size || 0;
+          if (total && navigator.storage?.estimate) {
             const e = await navigator.storage.estimate();
-            if (e.quota && size > e.quota - (e.usage || 0))
+            if (e.quota && total > e.quota - (e.usage || 0))
               throw new Error("기기 저장 공간이 부족합니다.");
           }
-          const audioBlob = await r.blob();
-          if (!audioBlob.size) throw new Error("빈 오디오 파일입니다.");
+          // Each chunk (≤40MB) goes straight to IndexedDB, so a 10-hour file
+          // never has to sit in memory at once. Saved chunks survive a retry.
+          const fetchPart = async (url: string) => {
+            const r = await fetch(url, { signal: AbortSignal.timeout(300000) });
+            if (!r.ok) throw new Error(`음원을 받지 못했습니다. (${r.status})`);
+            const blob = await r.blob();
+            if (!blob.size) throw new Error("빈 오디오 파일입니다.");
+            return blob;
+          };
+          let single: Blob | undefined;
+          if (urls.length === 1) single = await fetchPart(urls[0]);
+          else
+            for (let i = 0; i < urls.length; i++) {
+              mark({ receivePercent: Math.round((i / urls.length) * 100) });
+              if (await db.parts.get([job.video_id, i])) continue;
+              await db.parts.put({
+                track: job.video_id,
+                index: i,
+                blob: await fetchPart(urls[i]),
+              });
+            }
           let art: Blob | undefined;
           try {
             if (job.cover_url) {
@@ -550,7 +578,9 @@ export default function Home() {
               duration: job.duration,
               url: "https://www.youtube.com/watch?v=" + job.video_id,
               art: art?.size ? new Blob([art], { type: "image/jpeg" }) : undefined,
-              audio: new Blob([audioBlob], { type: "audio/mp4" }),
+              ...(single
+                ? { audio: new Blob([single], { type: "audio/mp4" }) }
+                : { parts: urls.length, size: total }),
               added: Date.now(),
             });
           await refresh();
@@ -645,6 +675,8 @@ export default function Home() {
     try {
       await api(`jobs/${job.id}`, undefined, undefined, "DELETE");
       setJobs((old) => old.filter((j) => j.id !== job.id));
+      if (!(await db.tracks.get(job.video_id)))
+        await db.parts.where("track").equals(job.video_id).delete();
     } catch (e) {
       setNotice(errorText(e));
     }
@@ -947,7 +979,7 @@ export default function Home() {
             <div>
               <b>내 기기에 보관 중</b>
               <small>
-                {bytes(tracks.reduce((n, t) => n + t.audio.size, 0))} ·{" "}
+                {bytes(tracks.reduce((n, t) => n + trackSize(t), 0))} ·{" "}
                 {tracks.length}곡
               </small>
             </div>
@@ -1451,7 +1483,7 @@ export default function Home() {
                 <HardDrive size={22} />
                 <h3>기기 저장 공간</h3>
                 <p>
-                  오디오 {bytes(tracks.reduce((n, t) => n + t.audio.size, 0))} ·{" "}
+                  오디오 {bytes(tracks.reduce((n, t) => n + trackSize(t), 0))} ·{" "}
                   {tracks.length}곡
                 </p>
                 <div className="storage-bar">
@@ -1602,7 +1634,7 @@ export default function Home() {
                       : j.status === "processing"
                         ? `PC ${j.stage || "처리 중"}${j.progress != null ? ` · ${j.progress}%` : ""}`
                         : j.receiving
-                          ? "iPhone으로 받는 중"
+                          ? `iPhone으로 받는 중${j.receivePercent ? ` · ${j.receivePercent}%` : ""}`
                           : "전송 대기");
                 return (
                   <div className="job" key={j.id}>
@@ -1612,7 +1644,9 @@ export default function Home() {
                       {j.status === "processing" && (
                         <progress max="100" value={j.progress ?? undefined} />
                       )}
-                      {j.receiving && <progress max="100" />}
+                      {j.receiving && (
+                        <progress max="100" value={j.receivePercent} />
+                      )}
                     </div>
                     {failed && (
                       <button

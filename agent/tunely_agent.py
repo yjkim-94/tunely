@@ -16,6 +16,8 @@ SERVER = os.getenv('TUNELY_URL', '').rstrip('/')
 TOKEN = os.getenv('AGENT_TOKEN', '')
 NAME = os.getenv('AGENT_NAME') or socket.gethostname()
 POLL = 5
+# Supabase free plan caps each upload at 50MB; long mixes are sent in pieces.
+CHUNK = 40 * 1024 * 1024
 
 
 class Cancelled(Exception):
@@ -28,7 +30,7 @@ def log(*a):
 
 def call(path, body=None):
     r = requests.post(SERVER + '/api/agent/' + path, json=body or {}, timeout=30,
-                      headers={'Authorization': 'Bearer ' + TOKEN, 'X-Agent-Name': NAME})
+                      headers={'Authorization': 'Bearer ' + TOKEN, 'X-Agent-Name': NAME, 'X-Agent-Version': '2'})
     if r.status_code == 409:
         raise Cancelled()
     r.raise_for_status()
@@ -46,10 +48,16 @@ def deno():
     return os.getenv('DENO_PATH') or shutil.which('deno')
 
 
-def upload(url, path, kind):
-    with open(path, 'rb') as f:
-        r = requests.put(url, data=f, timeout=300, headers={'Content-Type': kind, 'x-upsert': 'true'})
-    r.raise_for_status()
+def upload(url, data, kind):
+    for attempt in range(3):
+        try:
+            r = requests.put(url, data=data, timeout=300, headers={'Content-Type': kind, 'x-upsert': 'true'})
+            r.raise_for_status()
+            return
+        except requests.RequestException:
+            if attempt == 2:
+                raise
+            time.sleep(5)
 
 
 def process(job, folder):
@@ -95,14 +103,19 @@ def process(job, folder):
     except Exception as e:
         log('  썸네일 실패(음원만 전송):', e)
 
-    report('업로드', 0, True)
-    upload(job['upload']['audio'], audio, 'audio/mp4')
+    size = audio.stat().st_size
+    parts = -(-size // CHUNK)
+    urls = call(f'jobs/{jid}/uploads', {'parts': parts, 'size': size})
+    with audio.open('rb') as f:
+        for i, url in enumerate(urls['audio']):
+            report('업로드', round(i / parts * 100), True)
+            upload(url, f.read(CHUNK), 'audio/mp4')
     if cover.is_file() and cover.stat().st_size:
-        upload(job['upload']['cover'], cover, 'image/jpeg')
+        upload(urls['cover'], cover.read_bytes(), 'image/jpeg')
     call(f'jobs/{jid}/complete', {'title': info.get('title') or job['title'],
                                   'artist': info.get('channel') or info.get('uploader') or job['artist'] or '알 수 없음',
                                   'duration': int(info.get('duration') or job['duration'] or 0)})
-    return audio.stat().st_size
+    return size, parts
 
 
 def main():
@@ -130,8 +143,8 @@ def main():
         log(f'처리 시작: {job["title"]} ({job["url"]})')
         folder = Path(tempfile.mkdtemp(prefix='tunely-'))
         try:
-            size = process(job, folder)
-            log(f'  완료 · {size / 1024 / 1024:.1f} MB 업로드')
+            size, parts = process(job, folder)
+            log(f'  완료 · {size / 1024 / 1024:.1f} MB · {parts}개 조각 업로드')
         except Cancelled:
             log('  iPhone에서 취소된 작업입니다.')
         except Exception as e:

@@ -1,14 +1,14 @@
 # Tunely · iPhone 음악 PWA MVP
 
-Next.js + TypeScript 프론트엔드, Vercel Python Function(FastAPI), Supabase(대기열·임시 파일), Windows PC 에이전트(yt-dlp, FFmpeg, Deno)로 구성한 개인용 앱입니다. 오디오·커버·재생목록은 iPhone의 IndexedDB에 영구 저장합니다. Supabase의 임시 파일은 iPhone이 받으면 즉시, 받지 않으면 3일 뒤 삭제합니다.
+Next.js + TypeScript 프론트엔드, Vercel Python Function(FastAPI), Supabase(대기열·임시 파일), Windows PC 에이전트(yt-dlp, FFmpeg, Deno)로 구성한 개인용 앱입니다. 오디오·커버·재생목록은 iPhone의 IndexedDB에 영구 저장합니다. Supabase의 임시 파일과 작업 기록은 iPhone이 받으면 즉시, 받지 않으면 3일 뒤 삭제합니다.
 
 ## 저장 흐름
 
 Vercel에서 YouTube 다운로드가 봇으로 차단되어, 다운로드와 변환은 집 Windows PC에서 합니다.
 
 1. iPhone: 검색(Vercel) → 저장 → `POST /api/jobs`로 Supabase `jobs` 대기열에 등록
-2. PC 에이전트: `POST /api/agent/claim`으로 작업을 받아 다운로드·M4A 변환·썸네일 jpg 생성 → 서명 URL로 Supabase Storage `transfers`에 직접 업로드
-3. iPhone: 앱이 열려 있을 때 `GET /api/jobs`로 확인 → 음원·커버를 받아 보관함에 저장 → `received`로 서버 사본 삭제
+2. PC 에이전트: `POST /api/agent/claim`으로 작업을 받아 다운로드·M4A 변환·썸네일 jpg 생성 → 40MB 단위 조각으로 나눠 서명 URL로 Supabase Storage `transfers`에 직접 업로드(무료 플랜 파일당 50MB 제한)
+3. iPhone: 앱이 열려 있을 때 `GET /api/jobs`로 확인 → 조각을 하나씩 받아 IndexedDB에 저장(재생 시 합침) → `received`로 서버 파일과 작업 기록 삭제
 
 PC가 꺼져 있으면 요청은 대기열에 남습니다. 처리 중 15분 이상 소식이 없는 작업은 대기열로 되돌립니다.
 
