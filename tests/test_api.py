@@ -16,7 +16,8 @@ class FakeSupabase:
    from datetime import datetime,timezone
    return [{'last_seen':datetime.now(timezone.utc).isoformat()}]
   if path=='/rest/v1/rpc/claim_job':return self.claim
-  if '/object/sign/' in path:return {'signedURL':'/object/sign/'+path.split('/sign/',1)[1]+'?token=t'}
+  if path=='/storage/v1/object/sign/transfers':return [{'path':x,'signedURL':'/object/sign/transfers/'+x+'?token=t'} for x in kw['json']['paths']]
+  if '/object/list/' in path:return [{'name':'audio.000'},{'name':'cover.jpg'}]
   if '/upload/sign/' in path:return {'url':'/object/upload/sign/'+path.split('/sign/',1)[1]+'?token=t'}
   if method=='GET':return self.existing
   if method=='POST' and path=='/rest/v1/jobs':return [{'id':JOB,**kw['json']}]
@@ -70,14 +71,18 @@ class SecurityTests(unittest.TestCase):
    r=self.c.post('/api/jobs',json={'url':'https://youtu.be/QfzmglQwSCk'})
   self.assertEqual(r.json()['id'],'x');self.assertFalse([c for c in fake.calls if c[0]=='POST'])
  def test_list_jobs_signs_ready_files(self):
-  self.sign_in();fake=FakeSupabase(existing=[{'id':JOB,'status':'ready'},{'id':'q','status':'queued'}])
+  self.sign_in();fake=FakeSupabase(existing=[{'id':JOB,'status':'ready','parts':3},{'id':'q','status':'queued','parts':None},{'id':'old','status':'ready','parts':None}])
   with patch('api.index.sb',fake):r=self.c.get('/api/jobs').json()
-  self.assertTrue(r['jobs'][0]['audio_url'].endswith('/audio.m4a?token=t'));self.assertNotIn('audio_url',r['jobs'][1])
+  self.assertEqual([u.split('/')[-1] for u in r['jobs'][0]['audio_urls']],['audio.000?token=t','audio.001?token=t','audio.002?token=t'])
+  self.assertTrue(r['jobs'][0]['cover_url'].endswith('/cover.jpg?token=t'));self.assertNotIn('audio_urls',r['jobs'][1])
+  self.assertTrue(r['jobs'][2]['audio_urls'][0].endswith('/audio.m4a?token=t'))
   self.assertTrue(r['agent']['online'])
- def test_received_deletes_files(self):
+ def test_received_deletes_files_and_record(self):
   self.sign_in();fake=FakeSupabase()
   with patch('api.index.sb',fake):self.assertEqual(self.c.post(f'/api/jobs/{JOB}/received',json={}).status_code,200)
-  self.assertIn(('DELETE','/storage/v1/object/transfers'),[c[:2] for c in fake.calls])
+  deleted=[c for c in fake.calls if c[:2]==('DELETE','/storage/v1/object/transfers')][0][2]['json']['prefixes']
+  self.assertEqual(deleted,[f'{JOB}/audio.000',f'{JOB}/cover.jpg'])
+  self.assertIn(('DELETE','/rest/v1/jobs'),[c[:2] for c in fake.calls])
   self.assertEqual(self.c.post('/api/jobs/../x/received',json={}).status_code,404)
  def test_agent_requires_token(self):
   with patch('api.index.sb',FakeSupabase()):
@@ -89,6 +94,14 @@ class SecurityTests(unittest.TestCase):
   with patch('api.index.sb',fake):r=self.c.post('/api/agent/claim',headers=AGENT).json()
   self.assertEqual(r['job']['url'],'https://www.youtube.com/watch?v=QfzmglQwSCk')
   self.assertIn('/upload/sign/',r['job']['upload']['audio'])
+ def test_agent_v2_gets_chunk_upload_urls(self):
+  fake=FakeSupabase(existing=[{'id':JOB}],claim=[{'id':JOB,'video_id':'QfzmglQwSCk','title':'t','artist':'a','duration':1,'thumbnail':None}])
+  with patch('api.index.sb',fake):
+   job=self.c.post('/api/agent/claim',headers=AGENT|{'X-Agent-Version':'2'}).json()['job']
+   self.assertNotIn('upload',job)
+   r=self.c.post(f'/api/agent/jobs/{JOB}/uploads',json={'parts':15,'size':600_000_000},headers=AGENT).json()
+   self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/uploads',json={'parts':41,'size':1},headers=AGENT).status_code,422)
+  self.assertEqual(len(r['audio']),15);self.assertIn('/audio.014?token=t',r['audio'][-1]);self.assertIn('/cover.jpg',r['cover'])
  def test_agent_progress_on_cancelled_job_conflicts(self):
   with patch('api.index.sb',FakeSupabase(existing=[])):
    self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/progress',json={'stage':'다운로드','percent':5},headers=AGENT).status_code,409)

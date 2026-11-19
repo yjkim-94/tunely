@@ -31,6 +31,9 @@ class Complete(BaseModel):
     artist:str=Field(max_length=200)
     duration:int=Field(ge=0,le=86400)
 class Fail(BaseModel): error:str=Field(max_length=500)
+class Uploads(BaseModel):
+    parts:int=Field(ge=1,le=40)
+    size:int=Field(ge=1)
 
 def configured():
     if not os.getenv('APP_PASSWORD_HASH') or len(os.getenv('SESSION_SECRET',''))<32: raise HTTPException(503,'서버 비밀번호 설정이 필요합니다.')
@@ -148,7 +151,7 @@ async def search(body:Search,request:Request,token=Depends(auth)):
 # Download queue. Windows PC agent does the YouTube work; Supabase holds the
 # queue (jobs table) and the transient files (transfers bucket).
 BUCKET='transfers'
-JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at'
+JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at,parts,size'
 AGENT_ONLINE=30
 RETENTION_DAYS=3
 
@@ -166,18 +169,27 @@ async def sb(method,path,**kw):
         raise HTTPException(502,'서버 저장소 요청에 실패했습니다.')
     return r.json() if r.content else None
 
-def files(job_id): return [f'{job_id}/audio.m4a',f'{job_id}/cover.jpg']
+def audio_paths(job_id,parts):
+    # parts is None for jobs uploaded by an older agent as a single audio.m4a.
+    return [f'{job_id}/audio.m4a'] if not parts else [f'{job_id}/audio.{i:03d}' for i in range(parts)]
 
-async def signed_download(path):
-    data=await sb('POST',f'/storage/v1/object/sign/{BUCKET}/{path}',json={'expiresIn':900})
-    return os.getenv('SUPABASE_URL','').rstrip('/')+'/storage/v1'+data['signedURL']
+def base(): return os.getenv('SUPABASE_URL','').rstrip('/')+'/storage/v1'
+
+async def signed_downloads(paths):
+    data=await sb('POST',f'/storage/v1/object/sign/{BUCKET}',json={'expiresIn':3600,'paths':paths})
+    urls={d['path']:d.get('signedURL') for d in data}
+    if any(not urls.get(p) for p in paths): raise HTTPException(502,'전송 파일을 찾을 수 없습니다.')
+    return [base()+urls[p] for p in paths]
 
 async def signed_upload(path):
     data=await sb('POST',f'/storage/v1/object/upload/sign/{BUCKET}/{path}',headers={'x-upsert':'true'})
-    return os.getenv('SUPABASE_URL','').rstrip('/')+'/storage/v1'+data['url']
+    return base()+data['url']
 
 async def remove_files(job_ids):
-    if job_ids: await sb('DELETE',f'/storage/v1/object/{BUCKET}',json={'prefixes':[p for j in job_ids for p in files(j)]})
+    for j in job_ids:
+        listed=await sb('POST',f'/storage/v1/object/list/{BUCKET}',json={'prefix':j+'/','limit':1000})
+        paths=[f'{j}/{o["name"]}' for o in listed or []]
+        if paths: await sb('DELETE',f'/storage/v1/object/{BUCKET}',json={'prefixes':paths})
 
 def job_id(value):
     if not re.fullmatch(r'[0-9a-f-]{36}',value): raise HTTPException(404,'작업을 찾을 수 없습니다.')
@@ -203,7 +215,9 @@ async def list_jobs(token=Depends(auth)):
     rows=await sb('GET','/rest/v1/jobs',params={'select':JOB_FIELDS,'status':'in.(queued,processing,ready,failed)','order':'created_at.asc'})
     for row in rows:
         if row['status']=='ready':
-            row['audio_url'],row['cover_url']=[await signed_download(p) for p in files(row['id'])]
+            row['audio_urls']=await signed_downloads(audio_paths(row['id'],row['parts']))
+            try: row['cover_url']=(await signed_downloads([row['id']+'/cover.jpg']))[0]
+            except HTTPException: row['cover_url']=None
     seen=await agent_seen()
     online=bool(seen) and time.time()-datetime.fromisoformat(seen).timestamp()<AGENT_ONLINE
     return {'jobs':rows,'agent':{'online':online,'last_seen':seen}}
@@ -211,8 +225,9 @@ async def list_jobs(token=Depends(auth)):
 @app.post('/api/jobs/{id}/received')
 async def received(id:str,token=Depends(auth)):
     id=job_id(id)
-    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.ready'},json={'status':'received'})
+    # Nothing is kept after the iPhone has the file: drop both the files and the record.
     await remove_files([id])
+    await sb('DELETE','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.ready'})
     return {'ok':True}
 
 @app.post('/api/jobs/{id}/retry')
@@ -248,8 +263,17 @@ async def claim(request:Request,_=Depends(agent)):
     rows=await sb('POST','/rest/v1/rpc/claim_job',json={'agent':agent_name(request)})
     if not rows: return {'job':None}
     job=rows[0]
-    audio,cover=[await signed_upload(p) for p in files(job['id'])]
-    return {'job':{k:job[k] for k in ('id','video_id','title','artist','duration','thumbnail')}|{'url':'https://www.youtube.com/watch?v='+job['video_id'],'upload':{'audio':audio,'cover':cover}}}
+    out={k:job[k] for k in ('id','video_id','title','artist','duration','thumbnail')}|{'url':'https://www.youtube.com/watch?v='+job['video_id']}
+    if request.headers.get('x-agent-version')!='2':
+        # Older agents upload one audio.m4a straight after claiming.
+        out['upload']={'audio':await signed_upload(job['id']+'/audio.m4a'),'cover':await signed_upload(job['id']+'/cover.jpg')}
+    return {'job':out}
+
+@app.post('/api/agent/jobs/{id}/uploads')
+async def agent_uploads(request:Request,id:str,body:Uploads,_=Depends(agent)):
+    await agent_job(id);await touch_agent(request)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'parts':body.parts,'size':body.size})
+    return {'audio':[await signed_upload(p) for p in audio_paths(id,body.parts)],'cover':await signed_upload(id+'/cover.jpg')}
 
 @app.post('/api/agent/jobs/{id}/progress')
 async def agent_progress(request:Request,id:str,body:Progress,_=Depends(agent)):
