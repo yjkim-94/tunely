@@ -55,6 +55,21 @@ class SecurityTests(unittest.TestCase):
   self.sign_in()
   with patch('api.index.sb',FakeSupabase()):
    self.assertEqual(self.c.post('/api/jobs',json={'url':'https://127.0.0.1'}).status_code,400)
+ def test_search_sort_is_passed_and_validated(self):
+  self.sign_in();seen=[]
+  async def fake_spawn(*args):
+   seen.append(args)
+   return await asyncio.create_subprocess_exec(os.sys.executable,'-c','import json;print(json.dumps({"items":[{"id":"QfzmglQwSCk","views":123456}]}))',stdout=asyncio.subprocess.PIPE,start_new_session=True)
+  with patch('api.index.spawn',fake_spawn):
+   r=self.c.post('/api/search',json={'query':'lofi','sort':'views'})
+   self.assertEqual(r.json()[0]['views'],123456);self.assertEqual(seen[-1],('search','lofi','views'))
+   self.assertEqual(self.c.post('/api/search',json={'query':'lofi','sort':'random'}).status_code,422)
+ def test_agent_fail_strips_signed_urls(self):
+  fake=FakeSupabase(existing=[{'id':JOB}])
+  with patch('api.index.sb',fake):
+   self.c.post(f'/api/agent/jobs/{JOB}/fail',json={'error':'413 for https://x.supabase.co/storage/v1/object/upload/sign/transfers/a/audio.m4a?token=eyJsecret'},headers=AGENT)
+  err=[c for c in fake.calls if c[0]=='PATCH'][0][2]['json']['error']
+  self.assertNotIn('eyJsecret',err)
  def test_throttle(self):
   for _ in range(5):self.c.post('/api/auth/login',json={'password':'bad'})
   self.assertEqual(self.c.post('/api/auth/login',json={'password':'bad'}).status_code,429)

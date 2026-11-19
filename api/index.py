@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 from fastapi import FastAPI, HTTPException, Request, Response, Depends
 from fastapi.responses import StreamingResponse
+from typing import Literal
 from pydantic import BaseModel, Field
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, InvalidHashError
@@ -16,7 +17,9 @@ COOKIE='soriham_session'
 ROOT=Path(__file__).resolve().parent.parent/'backend'
 
 class Login(BaseModel): password:str=Field(min_length=1,max_length=1024)
-class Search(BaseModel): query:str=Field(min_length=1,max_length=200)
+class Search(BaseModel):
+    query:str=Field(min_length=1,max_length=200)
+    sort:Literal['relevance','date','views']='relevance'
 class JobIn(BaseModel):
     url:str=Field(max_length=2048)
     title:str=Field(default='',max_length=300)
@@ -131,7 +134,7 @@ async def stop(proc):
 @app.post('/api/search')
 async def search(body:Search,request:Request,token=Depends(auth)):
     rate('search:'+token,30)
-    proc=await spawn('search',body.query.strip())
+    proc=await spawn('search',body.query.strip(),body.sort)
     try:
         async with asyncio.timeout(45):
             task=asyncio.create_task(proc.communicate())
@@ -290,7 +293,7 @@ async def agent_complete(request:Request,id:str,body:Complete,_=Depends(agent)):
 @app.post('/api/agent/jobs/{id}/fail')
 async def agent_fail(request:Request,id:str,body:Fail,_=Depends(agent)):
     await agent_job(id);await touch_agent(request)
-    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'failed','error':body.error,'stage':None})
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'failed','error':re.sub(r'\S*\?token=\S+','[URL]',body.error),'stage':None})
     await remove_files([id])
     return {'ok':True}
 

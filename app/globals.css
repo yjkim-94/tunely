@@ -766,6 +766,29 @@ small.agent-status {
   font-size: 10px;
   margin-top: 4px;
 }
+.result-card > small.result-meta {
+  color: var(--muted);
+  margin-top: 2px;
+}
+.sort-chips {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.sort-chips button {
+  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+}
+.sort-chips button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
 .result-card > .text-button {
   padding-left: 0;
   font-size: 10px;

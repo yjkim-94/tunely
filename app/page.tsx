@@ -40,7 +40,41 @@ import {
   type Playlist,
 } from "./db";
 
-type Result = Omit<Track, "audio" | "added">;
+type Result = Omit<Track, "audio" | "added"> & {
+  views?: number | null;
+  published?: number | null;
+};
+type SearchSort = "relevance" | "date" | "views";
+const sorts: [SearchSort, string][] = [
+  ["relevance", "관련도"],
+  ["date", "최신순"],
+  ["views", "조회수순"],
+];
+const compact = (n: number) =>
+  n >= 1e8
+    ? `${+(n / 1e8).toFixed(n < 1e9 ? 1 : 0)}억`
+    : n >= 1e4
+      ? `${+(n / 1e4).toFixed(n < 1e5 ? 1 : 0)}만`
+      : n.toLocaleString("ko-KR");
+const ago = (ts: number) => {
+  const d = (Date.now() / 1000 - ts) / 86400;
+  return d >= 365
+    ? `${Math.floor(d / 365)}년 전`
+    : d >= 30
+      ? `${Math.floor(d / 30)}개월 전`
+      : d >= 7
+        ? `${Math.floor(d / 7)}주 전`
+        : d >= 1
+          ? `${Math.floor(d)}일 전`
+          : "오늘";
+};
+const resultMeta = (t: Result) =>
+  [
+    t.views != null && `조회수 ${compact(t.views)}${t.views < 1e4 ? "회" : ""}`,
+    t.published && ago(t.published),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 type Job = {
   id: string;
   video_id: string;
@@ -176,6 +210,7 @@ export default function Home() {
     [results, setResults] = useState<Result[]>([]),
     [searched, setSearched] = useState(false),
     [searching, setSearching] = useState(false),
+    [searchSort, setSearchSort] = useState<SearchSort>("relevance"),
     [picked, setPicked] = useState<string[]>([]),
     [jobs, setJobs] = useState<Job[]>([]),
     [agentOnline, setAgentOnline] = useState<boolean>();
@@ -491,7 +526,7 @@ export default function Home() {
       setLoginBusy(false);
     }
   }
-  async function search(e?: React.FormEvent) {
+  async function search(e?: React.FormEvent, sortBy = searchSort) {
     e?.preventDefault();
     if (!query.trim()) return;
     searchAbort.current?.abort();
@@ -513,7 +548,11 @@ export default function Home() {
         ]);
         return;
       }
-      const r = await api("search", { query: query.trim() }, c.signal);
+      const r = await api(
+        "search",
+        { query: query.trim(), sort: sortBy },
+        c.signal,
+      );
       setResults(await r.json());
     } catch (e) {
       if (!c.signal.aborted) {
@@ -1312,6 +1351,24 @@ export default function Home() {
                   <span>검색</span>
                 </button>
               </form>
+              <div className="sort-chips" role="group" aria-label="검색 정렬">
+                {sorts.map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={searchSort === key ? "on" : ""}
+                    aria-pressed={searchSort === key}
+                    disabled={searching}
+                    onClick={() => {
+                      setSearchSort(key);
+                      if (query.trim() && !/^https?:/.test(query.trim()))
+                        void search(undefined, key);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
               <p
                 className={
                   "agent-status " + (agentOnline ? "online" : "offline")
@@ -1391,6 +1448,9 @@ export default function Home() {
                         </button>
                         <b>{t.title}</b>
                         <small>{t.artist}</small>
+                        {resultMeta(t) && (
+                          <small className="result-meta">{resultMeta(t)}</small>
+                        )}
                         <button
                           className="text-button"
                           disabled={offline}
