@@ -198,6 +198,9 @@ export default function Home() {
     [listName, setListName] = useState(""),
     [listDialog, setListDialog] = useState(false),
     [addToList, setAddToList] = useState<string[] | null>(null),
+    [pickFor, setPickFor] = useState<string | null>(null),
+    [picks, setPicks] = useState<string[]>([]),
+    [pickFilter, setPickFilter] = useState(""),
     [health, setHealth] = useState("");
   const audio = useRef<HTMLAudioElement>(null),
     blobUrl = useRef<string | undefined>(undefined),
@@ -577,7 +580,9 @@ export default function Home() {
               artist: job.artist,
               duration: job.duration,
               url: "https://www.youtube.com/watch?v=" + job.video_id,
-              art: art?.size ? new Blob([art], { type: "image/jpeg" }) : undefined,
+              art: art?.size
+                ? new Blob([art], { type: "image/jpeg" })
+                : undefined,
               ...(single
                 ? { audio: new Blob([single], { type: "audio/mp4" }) }
                 : { parts: urls.length, size: total }),
@@ -753,14 +758,31 @@ export default function Home() {
   async function createList() {
     if (!listName.trim()) return;
     try {
-      await db.playlists.add({
-        id: crypto.randomUUID(),
-        name: listName.trim(),
-        tracks: [],
-      });
+      const id = crypto.randomUUID();
+      await db.playlists.add({ id, name: listName.trim(), tracks: [] });
       setListName("");
       setListDialog(false);
       await refresh();
+      if (tracks.length) openPicker(id);
+    } catch (e) {
+      setNotice(errorText(e));
+    }
+  }
+  function openPicker(id: string) {
+    setPicks([]);
+    setPickFilter("");
+    setPickFor(id);
+  }
+  async function addPicked() {
+    const list = lists.find((l) => l.id === pickFor);
+    if (!list || !picks.length) return setPickFor(null);
+    try {
+      await db.playlists.update(list.id, {
+        tracks: [...new Set([...list.tracks, ...picks])],
+      });
+      setPickFor(null);
+      await refresh();
+      setNotice(`${picks.length}곡을 ‘${list.name}’에 담았어요.`);
     } catch (e) {
       setNotice(errorText(e));
     }
@@ -1047,9 +1069,18 @@ export default function Home() {
                       : "좋아하는 음악을 담아, 언제 어디서나."}
                   </p>
                 </div>
-                <button className="primary" onClick={() => setTab("search")}>
-                  <Plus size={18} /> 음악 담기
-                </button>
+                {active ? (
+                  <button
+                    className="primary"
+                    onClick={() => openPicker(active.id)}
+                  >
+                    <Plus size={18} /> 곡 추가
+                  </button>
+                ) : (
+                  <button className="primary" onClick={() => setTab("search")}>
+                    <Plus size={18} /> 음악 담기
+                  </button>
+                )}
               </div>
               <div className="collection-banner">
                 <div>
@@ -1189,27 +1220,56 @@ export default function Home() {
                   <h3>
                     {filter
                       ? "검색 결과가 없어요"
-                      : "첫 번째 음악을 담아볼까요?"}
+                      : active
+                        ? "아직 담긴 곡이 없어요"
+                        : "첫 번째 음악을 담아볼까요?"}
                   </h3>
                   <p>
                     {filter
                       ? "다른 제목이나 아티스트로 찾아보세요."
-                      : "음악을 찾거나, 가지고 있는 오디오 파일을 추가해 보세요."}
+                      : active
+                        ? tracks.length
+                          ? "보관함에 저장된 곡 중에서 골라 담아 보세요."
+                          : "보관함이 비어 있어요. 먼저 음악 찾기에서 곡을 저장해 주세요."
+                        : "음악을 찾거나, 가지고 있는 오디오 파일을 추가해 보세요."}
                   </p>
-                  <div>
-                    <button
-                      className="secondary"
-                      onClick={() => setTab("search")}
-                    >
-                      <Search size={16} /> 음악 찾기
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() => fileInput.current?.click()}
-                    >
-                      <Upload size={16} /> 파일 가져오기
-                    </button>
-                  </div>
+                  {active && !filter ? (
+                    <div>
+                      {tracks.length ? (
+                        <button
+                          className="secondary"
+                          onClick={() => openPicker(active.id)}
+                        >
+                          <Plus size={16} /> 보관함에서 고르기
+                        </button>
+                      ) : (
+                        <button
+                          className="secondary"
+                          onClick={() => {
+                            setActiveList(undefined);
+                            setTab("search");
+                          }}
+                        >
+                          <Search size={16} /> 음악 찾기
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <button
+                        className="secondary"
+                        onClick={() => setTab("search")}
+                      >
+                        <Search size={16} /> 음악 찾기
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() => fileInput.current?.click()}
+                      >
+                        <Upload size={16} /> 파일 가져오기
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="footer-note">
@@ -2130,6 +2190,79 @@ export default function Home() {
             </label>
             <button className="primary wide">만들기</button>
           </form>
+        </div>
+      )}
+      {pickFor && (
+        <div className="modal-backdrop">
+          <div
+            className="dialog picker"
+            role="dialog"
+            aria-modal="true"
+            aria-label="보관함에서 곡 고르기"
+          >
+            <div className="modal-heading">
+              <h2>보관함에서 고르기</h2>
+              <button
+                className="icon"
+                aria-label="닫기"
+                onClick={() => setPickFor(null)}
+              >
+                <X />
+              </button>
+            </div>
+            <input
+              aria-label="보관함 검색"
+              placeholder="제목이나 아티스트로 찾기"
+              value={pickFilter}
+              onChange={(e) => setPickFilter(e.target.value)}
+            />
+            <div className="picker-list">
+              {tracks
+                .filter((t) =>
+                  `${t.title} ${t.artist}`
+                    .toLowerCase()
+                    .includes(pickFilter.toLowerCase()),
+                )
+                .sort((a, b) => b.added - a.added)
+                .map((t) => {
+                  const inList = !!lists
+                    .find((l) => l.id === pickFor)
+                    ?.tracks.includes(t.id);
+                  const on = inList || picks.includes(t.id);
+                  return (
+                    <button
+                      key={t.id}
+                      className={"pick-row " + (on ? "on" : "")}
+                      disabled={inList}
+                      onClick={() =>
+                        setPicks((s) =>
+                          s.includes(t.id)
+                            ? s.filter((x) => x !== t.id)
+                            : [...s, t.id],
+                        )
+                      }
+                    >
+                      <Cover track={t} />
+                      <span>
+                        <b>{t.title}</b>
+                        <small>{inList ? "이미 담김" : t.artist}</small>
+                      </span>
+                      <span className="pick-check">
+                        {on && <Check size={14} />}
+                      </span>
+                    </button>
+                  );
+                })}
+              {!tracks.length && <p>보관함에 저장된 곡이 없어요.</p>}
+            </div>
+            <button
+              className="primary wide"
+              disabled={!picks.length}
+              onClick={() => void addPicked()}
+            >
+              {picks.length ? `${picks.length}곡 담기` : "곡을 선택하세요"}
+            </button>
+          </div>
         </div>
       )}
       {addToList && (

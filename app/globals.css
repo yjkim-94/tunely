@@ -1176,6 +1176,63 @@ small.agent-status {
 .list-choice svg:last-child {
   margin-left: auto;
 }
+.picker > input {
+  width: 100%;
+}
+.picker-list {
+  margin-top: 12px;
+  max-height: 52dvh;
+  overflow: auto;
+}
+.pick-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+.pick-row > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pick-row b,
+.pick-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.pick-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.picker .cover {
+  width: 46px;
+  height: 46px;
+}
+.pick-row:disabled {
+  opacity: 0.55;
+}
+.pick-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.pick-row.on .pick-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
 .dialog > .wide {
   margin-top: 15px;
 }
