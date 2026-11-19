@@ -5,7 +5,7 @@ yt-dlp on this PC's home network, converts it to M4A with FFmpeg and uploads
 the result to temporary storage. The iPhone app picks it up from there.
 Run with run-agent.bat. Stop with Ctrl+C.
 """
-import os, shutil, socket, subprocess, sys, tempfile, time
+import os, re, shutil, socket, subprocess, sys, tempfile, time
 from pathlib import Path
 import requests, yt_dlp
 from dotenv import load_dotenv
@@ -52,9 +52,14 @@ def upload(url, data, kind):
     for attempt in range(3):
         try:
             r = requests.put(url, data=data, timeout=300, headers={'Content-Type': kind, 'x-upsert': 'true'})
-            r.raise_for_status()
+            if r.status_code >= 400:
+                try:
+                    detail = r.json().get('message') or r.text
+                except ValueError:
+                    detail = r.text
+                raise RuntimeError(f'업로드 실패 (HTTP {r.status_code}): {detail[:150]}')
             return
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             if attempt == 2:
                 raise
             time.sleep(5)
@@ -148,7 +153,8 @@ def main():
         except Cancelled:
             log('  iPhone에서 취소된 작업입니다.')
         except Exception as e:
-            msg = str(e).replace('\x1b', '')[-400:] or '처리 실패'
+            # Never store signed URLs (they carry upload tokens) in logs or the DB.
+            msg = re.sub(r'https?://\S+', '[URL]', str(e).replace('\x1b', ''))[-400:] or '처리 실패'
             log('  실패:', msg)
             try:
                 call(f'jobs/{job["id"]}/fail', {'error': msg})

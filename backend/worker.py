@@ -1,5 +1,6 @@
 """Isolated yt-dlp/FFmpeg process. stdout is a JSON-lines protocol."""
 import json, os, shutil, subprocess, sys
+from urllib.parse import quote_plus
 from pathlib import Path
 import yt_dlp
 
@@ -12,7 +13,7 @@ def runtime():
     return next((p for p in paths if p and Path(p).is_file()),None)
 
 def metadata(info):
-    return {'id':info['id'],'title':info.get('title') or '제목 없음','artist':info.get('channel') or info.get('uploader') or '알 수 없음','duration':info.get('duration') or 0,'thumbnail':info.get('thumbnail') or f"https://i.ytimg.com/vi/{info['id']}/hqdefault.jpg",'url':f"https://www.youtube.com/watch?v={info['id']}"}
+    return {'id':info['id'],'title':info.get('title') or '제목 없음','artist':info.get('channel') or info.get('uploader') or '알 수 없음','duration':info.get('duration') or 0,'thumbnail':info.get('thumbnail') or f"https://i.ytimg.com/vi/{info['id']}/hqdefault.jpg",'url':f"https://www.youtube.com/watch?v={info['id']}",'views':info.get('view_count'),'published':info.get('timestamp')}
 
 class Logger:
     def debug(self,msg): pass
@@ -23,9 +24,14 @@ def run():
     mode,target=sys.argv[1:3]
     opts={'quiet':True,'no_warnings':True,'logger':Logger(),'noplaylist':True,'socket_timeout':15,'retries':1,'fragment_retries':1,'cachedir':False,'remote_components':['ejs:github'],'js_runtimes':{'deno':{'path':runtime()}} if runtime() else {}}
     if mode=='search':
-        opts.update({'extract_flat':'in_playlist','skip_download':True,'ignoreerrors':False})
+        # approximate_date turns "3 years ago" into a timestamp for flat results.
+        opts.update({'extract_flat':'in_playlist','skip_download':True,'ignoreerrors':False,'playlistend':20,
+                     'extractor_args':{'youtubetab':{'approximate_date':['']}}})
+        # YouTube's own sort (videos only): upload date / view count.
+        sp={'date':'CAISAhAB','views':'CAMSAhAB'}.get(sys.argv[3] if len(sys.argv)>3 else '')
+        source=f'https://www.youtube.com/results?search_query={quote_plus(target)}&sp={sp}' if sp else 'ytsearch20:'+target
         with yt_dlp.YoutubeDL(opts) as y:
-            info=y.extract_info('ytsearch20:'+target,download=False)
+            info=y.extract_info(source,download=False)
             emit(type='results',items=[metadata(x) for x in (info or {}).get('entries',[]) if x and x.get('id')])
         return
     folder=Path(sys.argv[3]); last=[0]
