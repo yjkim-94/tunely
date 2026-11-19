@@ -6,8 +6,8 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 300,
-      "excludeFiles": "{.next/**,tests/**,out/**,.venv/**,node_modules/next/**,node_modules/@next/**}",
-      "includeFiles": "{backend/**,node_modules/deno/deno,node_modules/@deno/linux-x64-glibc/deno}"
+      "excludeFiles": "{.next/**,tests/**,out/**,.venv/**,node_modules/**,agent/**,app/**,public/**}",
+      "includeFiles": "backend/**"
     }
   },
   "rewrites": [
