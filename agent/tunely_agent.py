@@ -5,7 +5,7 @@ yt-dlp on this PC's home network, converts it to M4A with FFmpeg and uploads
 the result to temporary storage. The iPhone app picks it up from there.
 Run with run-agent.bat. Stop with Ctrl+C.
 """
-import os, re, shutil, socket, subprocess, sys, tempfile, time
+import os, re, shutil, socket, subprocess, sys, tempfile, time, unicodedata
 from pathlib import Path
 import requests, yt_dlp
 from dotenv import load_dotenv
@@ -24,7 +24,34 @@ class Cancelled(Exception):
     pass
 
 
+_status = {'width': 0, 'at': 0.0}
+
+
+def _width(text):
+    return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in text)
+
+
+def show(text, force=False):
+    """Redraw one progress line in place (\r), at most ~4 times a second."""
+    if not force and time.monotonic() - _status['at'] < 0.25:
+        return
+    _status['at'] = time.monotonic()
+    line = '  ' + text
+    pad = max(0, _status['width'] - _width(line))
+    sys.stdout.write('\r' + line + ' ' * pad)
+    sys.stdout.flush()
+    _status['width'] = _width(line)
+
+
+def bar(percent, size=20):
+    filled = round(size * percent / 100) if percent is not None else 0
+    return '[' + '#' * filled + '-' * (size - filled) + ']'
+
+
 def log(*a):
+    if _status['width']:
+        sys.stdout.write('\n')
+        _status['width'] = 0
     print(time.strftime('[%H:%M:%S]'), *a, flush=True)
 
 
@@ -69,7 +96,9 @@ def process(job, folder):
     jid = job['id']
     last = [0.0]
 
-    def report(stage, percent=None, force=False):
+    def report(stage, percent=None, force=False, detail=''):
+        text = stage + ' ' * max(1, 9 - _width(stage)) + f'{bar(percent)} ' + (f'{percent:3d}%' if percent is not None else '  …') + (f'  {detail}' if detail else '')
+        show(text, force or percent == 100)
         if force or time.monotonic() - last[0] > 3:
             last[0] = time.monotonic()
             call(f'jobs/{jid}/progress', {'stage': stage, 'percent': percent})
@@ -77,7 +106,12 @@ def process(job, folder):
     def hook(d):
         if d.get('status') == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
-            report('다운로드', round(d.get('downloaded_bytes', 0) / total * 100) if total else None)
+            done = d.get('downloaded_bytes', 0)
+            speed = d.get('speed')
+            detail = f'{done / 2**20:.1f}/{total / 2**20:.1f} MB' if total else f'{done / 2**20:.1f} MB'
+            if speed:
+                detail += f' · {speed / 2**20:.1f} MB/s'
+            report('다운로드', min(100, round(done / total * 100)) if total else None, detail=detail)
 
     report('다운로드', None, True)
     opts = {'quiet': True, 'no_warnings': True, 'noplaylist': True, 'socket_timeout': 20, 'retries': 3,
@@ -89,13 +123,32 @@ def process(job, folder):
         info = y.extract_info(job['url'], download=True)
         source = Path(y.prepare_filename(info))
 
-    report('M4A 변환', None, True)
+    copy = (info.get('acodec') or '').startswith(('mp4a', 'aac'))
+    stage = 'M4A 정리' if copy else 'M4A 변환'
+    report(stage, 0, True, '원본이 AAC라 재인코딩 없이 복사' if copy else '')
     audio = folder / 'audio.m4a'
-    codec = ['-c:a', 'copy'] if (info.get('acodec') or '').startswith(('mp4a', 'aac')) else ['-c:a', 'aac', '-q:a', '1']
-    r = subprocess.run([ffmpeg(), '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(source), '-vn',
-                        *codec, '-movflags', '+faststart', str(audio)], capture_output=True, text=True)
-    if r.returncode or not audio.is_file() or not audio.stat().st_size:
-        raise RuntimeError('M4A 변환 실패: ' + (r.stderr or '')[-200:])
+    codec = ['-c:a', 'copy'] if copy else ['-c:a', 'aac', '-q:a', '1']
+    total_us = (info.get('duration') or job.get('duration') or 0) * 1_000_000
+    started = time.monotonic()
+    # -progress pipe:1 prints key=value lines; out_time_us is how far FFmpeg has written.
+    proc = subprocess.Popen([ffmpeg(), '-nostdin', '-hide_banner', '-loglevel', 'error', '-nostats',
+                             '-progress', 'pipe:1', '-y', '-i', str(source), '-vn', *codec,
+                             '-movflags', '+faststart', str(audio)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+    for raw in proc.stdout:
+        key, _, value = raw.strip().partition('=')
+        if key in ('out_time_us', 'out_time_ms') and value.isdigit() and total_us:
+            done = int(value)
+            pct = min(99, round(done / total_us * 100))
+            elapsed = time.monotonic() - started
+            left = int(elapsed / done * (total_us - done)) if done else 0
+            eta = (f' · 남은 시간 약 {left // 60}분 {left % 60}초' if left >= 60 else f' · 남은 시간 약 {left}초') if pct > 2 else ''
+            report(stage, pct, detail=f'{done // 60_000_000}분/{int(total_us) // 60_000_000}분{eta}')
+    err = proc.stderr.read()
+    proc.wait()
+    if proc.returncode or not audio.is_file() or not audio.stat().st_size:
+        raise RuntimeError('M4A 변환 실패: ' + (err or '')[-200:])
+    report(stage, 100, True, f'{time.monotonic() - started:.0f}초')
 
     cover = folder / 'cover.jpg'
     try:
@@ -113,10 +166,11 @@ def process(job, folder):
     urls = call(f'jobs/{jid}/uploads', {'parts': parts, 'size': size})
     with audio.open('rb') as f:
         for i, url in enumerate(urls['audio']):
-            report('업로드', round(i / parts * 100), True)
+            report('업로드', round(i / parts * 100), True, f'조각 {i + 1}/{parts} · 전체 {size / 2**20:.1f} MB')
             upload(url, f.read(CHUNK), 'audio/mp4')
     if cover.is_file() and cover.stat().st_size:
         upload(urls['cover'], cover.read_bytes(), 'image/jpeg')
+    report('업로드', 100, True, f'조각 {parts}/{parts} · 전체 {size / 2**20:.1f} MB')
     call(f'jobs/{jid}/complete', {'title': info.get('title') or job['title'],
                                   'artist': info.get('channel') or info.get('uploader') or job['artist'] or '알 수 없음',
                                   'duration': int(info.get('duration') or job['duration'] or 0)})
