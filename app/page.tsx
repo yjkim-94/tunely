@@ -18,7 +18,6 @@ import {
   X,
   Check,
   Trash2,
-  ChevronLeft,
   ChevronUp,
   ChevronDown,
   Headphones,
@@ -41,14 +40,20 @@ import {
 
 type Result = Omit<Track, "audio" | "added">;
 type Job = {
-  key: string;
-  url: string;
+  id: string;
+  video_id: string;
   title: string;
-  id?: string;
-  state: "waiting" | "running" | "done" | "error" | "cancelled";
-  stage?: string;
-  percent?: number;
-  error?: string;
+  artist: string;
+  duration: number;
+  thumbnail?: string;
+  status: "queued" | "processing" | "ready" | "failed";
+  progress?: number | null;
+  stage?: string | null;
+  error?: string | null;
+  audio_url?: string;
+  cover_url?: string;
+  receiving?: boolean;
+  receiveError?: string;
 };
 type Saved = {
   id?: string;
@@ -73,9 +78,14 @@ const bytes = (n: number) =>
     : `${(n / 1024 ** 2).toFixed(1)} MB`;
 const errorText = (e: unknown) =>
   e instanceof Error ? e.message : "작업 중 오류가 발생했습니다.";
-async function api(path: string, body?: unknown, signal?: AbortSignal) {
+async function api(
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+  method?: string,
+) {
   const r = await fetch("/api/" + path, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     credentials: "same-origin",
     headers:
       body === undefined ? undefined : { "Content-Type": "application/json" },
@@ -148,7 +158,6 @@ function Cover({
 export default function Home() {
   const [initPhase, setInitPhase] = useState("저장소를 확인하고 있어요"),
     [ready, setReady] = useState(false),
-    [consent, setConsent] = useState(false),
     [auth, setAuth] = useState(false),
     [expires, setExpires] = useState(0),
     [password, setPassword] = useState(""),
@@ -164,8 +173,8 @@ export default function Home() {
     [searched, setSearched] = useState(false),
     [searching, setSearching] = useState(false),
     [picked, setPicked] = useState<string[]>([]),
-    [permitted, setPermitted] = useState(false),
-    [jobs, setJobs] = useState<Job[]>([]);
+    [jobs, setJobs] = useState<Job[]>([]),
+    [agentOnline, setAgentOnline] = useState<boolean>();
   const [selected, setSelected] = useState<string[]>([]),
     [selectionMode, setSelectionMode] = useState(false),
     [notice, setNotice] = useState(""),
@@ -190,7 +199,7 @@ export default function Home() {
     blobUrl = useRef<string | undefined>(undefined),
     abort = useRef<AbortController | undefined>(undefined),
     searchAbort = useRef<AbortController | undefined>(undefined),
-    running = useRef(false),
+    receivingRef = useRef(new Set<string>()),
     savedRef = useRef<Saved>(emptySaved),
     seekRef = useRef<number | null>(null),
     fileInput = useRef<HTMLInputElement>(null),
@@ -227,7 +236,6 @@ export default function Home() {
         ]);
         await refresh();
         setInitPhase("설정을 불러오고 있어요");
-        setConsent(await setting("consent-v1", false));
         const s = await setting<Saved>("player", emptySaved);
         savedRef.current = s;
         setQueue(s.queue);
@@ -335,7 +343,7 @@ export default function Home() {
     return () => {
       a.pause();
     };
-  }, [current?.id, auth, consent, ready]);
+  }, [current?.id, auth, ready]);
   useEffect(() => {
     if (audio.current) audio.current.playbackRate = speed;
   }, [speed]);
@@ -355,7 +363,7 @@ export default function Home() {
       setPosition(0);
       setCurrent(t);
     },
-    [current?.id, auth, consent, ready],
+    [current?.id, auth, ready],
   );
   const playOnLoad = useRef(false);
   const startTrack = (t: Track, ids?: string[]) => {
@@ -458,6 +466,11 @@ export default function Home() {
       setExpires(d.expires);
       setAuth(true);
       setPassword("");
+      if (navigator.storage?.persist)
+        void navigator.storage
+          .persist()
+          .then(setPersistent)
+          .catch(() => {});
     } catch (e) {
       setNotice(errorText(e));
     } finally {
@@ -497,150 +510,153 @@ export default function Home() {
       if (!c.signal.aborted) setSearching(false);
     }
   }
-  function enqueue(items: Result[]) {
-    if (!permitted) {
-      setNotice("아래 저장 권한 확인에 동의해 주세요.");
+  const receive = useCallback(
+    async (job: Job) => {
+      if (!job.audio_url || receivingRef.current.has(job.id)) return;
+      receivingRef.current.add(job.id);
+      const mark = (patch: Partial<Job>) =>
+        setJobs((old) =>
+          old.map((j) => (j.id === job.id ? { ...j, ...patch } : j)),
+        );
+      mark({ receiving: true, receiveError: undefined });
+      try {
+        if (!(await db.tracks.get(job.video_id))) {
+          const r = await fetch(job.audio_url, {
+            signal: AbortSignal.timeout(180000),
+          });
+          if (!r.ok) throw new Error(`음원을 받지 못했습니다. (${r.status})`);
+          const size = Number(r.headers.get("Content-Length") || 0);
+          if (size && navigator.storage?.estimate) {
+            const e = await navigator.storage.estimate();
+            if (e.quota && size > e.quota - (e.usage || 0))
+              throw new Error("기기 저장 공간이 부족합니다.");
+          }
+          const audioBlob = await r.blob();
+          if (!audioBlob.size) throw new Error("빈 오디오 파일입니다.");
+          let art: Blob | undefined;
+          try {
+            if (job.cover_url) {
+              const c = await fetch(job.cover_url, {
+                signal: AbortSignal.timeout(20000),
+              });
+              if (c.ok) art = await c.blob();
+            }
+          } catch {}
+          if (!(await db.tracks.get(job.video_id)))
+            await db.tracks.add({
+              id: job.video_id,
+              title: job.title,
+              artist: job.artist,
+              duration: job.duration,
+              url: "https://www.youtube.com/watch?v=" + job.video_id,
+              art: art?.size ? new Blob([art], { type: "image/jpeg" }) : undefined,
+              audio: new Blob([audioBlob], { type: "audio/mp4" }),
+              added: Date.now(),
+            });
+          await refresh();
+        }
+        await api(`jobs/${job.id}/received`, {});
+        setJobs((old) => old.filter((j) => j.id !== job.id));
+        setNotice(`‘${job.title}’을 보관함에 담았어요.`);
+      } catch (e) {
+        mark({ receiving: false, receiveError: errorText(e) });
+      } finally {
+        receivingRef.current.delete(job.id);
+      }
+    },
+    [refresh],
+  );
+  const syncJobs = useCallback(async () => {
+    try {
+      const r = await api("jobs");
+      const d: { jobs: Job[]; agent: { online: boolean } } = await r.json();
+      setAgentOnline(d.agent.online);
+      setJobs((old) =>
+        d.jobs.map((j) => {
+          const prev = old.find((o) => o.id === j.id);
+          return prev
+            ? {
+                ...j,
+                receiving: prev.receiving,
+                receiveError: prev.receiveError,
+              }
+            : j;
+        }),
+      );
+      for (const j of d.jobs) if (j.status === "ready") await receive(j);
+    } catch {}
+  }, [receive]);
+  const activeJobs = jobs.some((j) =>
+    ["queued", "processing", "ready"].includes(j.status),
+  );
+  useEffect(() => {
+    if (!auth || offline) return;
+    void syncJobs();
+    const timer = setInterval(
+      () => {
+        if (document.visibilityState === "visible") void syncJobs();
+      },
+      activeJobs ? 5000 : 30000,
+    );
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void syncJobs();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [auth, offline, activeJobs, syncJobs]);
+  async function enqueue(items: Result[]) {
+    const fresh = items.filter(
+      (t) =>
+        !tracks.some((x) => x.id === t.id) &&
+        !jobs.some((j) => j.video_id === t.id),
+    );
+    setPicked([]);
+    if (!fresh.length) {
+      setNotice("이미 보관 중이거나 대기열에 있는 음악입니다.");
       return;
     }
-    setJobs((old) => {
-      const added: Job[] = [];
-      for (const t of items) {
-        if (
-          tracks.some((x) => x.id === t.id) ||
-          old.some(
-            (j) => j.id === t.id && ["waiting", "running"].includes(j.state),
-          ) ||
-          added.some((j) => j.id === t.id)
-        )
-          continue;
-        added.push({
-          key: crypto.randomUUID(),
-          url: t.url || "https://www.youtube.com/watch?v=" + t.id,
-          title: t.title,
-          id: t.id,
-          state: "waiting",
-        });
-      }
-      if (!added.length)
-        setNotice("이미 보관 중이거나 대기열에 있는 음악입니다.");
-      return [...old, ...added];
-    });
-    setPicked([]);
-  }
-  useEffect(() => {
-    if (running.current || !auth || !consent) return;
-    const job = jobs.find((j) => j.state === "waiting");
-    if (!job) return;
-    running.current = true;
-    const c = new AbortController();
-    abort.current = c;
-    const update = (patch: Partial<Job>) =>
-      setJobs((old) =>
-        old.map((j) => (j.key === job.key ? { ...j, ...patch } : j)),
-      );
-    update({ state: "running", stage: "연결 중" });
-    (async () => {
-      let chunks: ArrayBuffer[] = [];
+    let failed = 0;
+    for (const t of fresh) {
       try {
-        const res = await api(
-          "import/convert",
-          { url: job.url, permitted: true },
-          c.signal,
-        );
-        const reader = res.body?.getReader();
-        if (!reader) throw new Error("스트리밍을 지원하지 않는 환경입니다.");
-        const decoder = new TextDecoder();
-        let buffer = "",
-          complete = false;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let cut;
-          while ((cut = buffer.indexOf("\n")) >= 0) {
-            const raw = buffer.slice(0, cut);
-            buffer = buffer.slice(cut + 1);
-            if (!raw.trim()) continue;
-            const data = JSON.parse(raw);
-            if (c.signal.aborted) throw new DOMException("취소", "AbortError");
-            if (data.type === "error") throw new Error(data.message);
-            if (data.type === "progress") {
-              update({ stage: data.stage, percent: data.percent });
-              if (data.total && navigator.storage?.estimate) {
-                const estimate = await navigator.storage.estimate();
-                if (
-                  estimate.quota &&
-                  data.total > estimate.quota - (estimate.usage || 0)
-                )
-                  throw new Error("기기 저장 공간이 부족합니다.");
-              }
-            }
-            if (data.type === "audio") {
-              const binary = atob(data.data);
-              const a = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++)
-                a[i] = binary.charCodeAt(i);
-              chunks.push(a.buffer);
-              update({ stage: "기기에 저장 중", percent: data.percent });
-            }
-            if (data.type === "done") {
-              const blob = new Blob(chunks, { type: "audio/mp4" });
-              if (!blob.size) throw new Error("빈 오디오 파일입니다.");
-              let art: Blob | undefined;
-              try {
-                if (data.track.thumbnail) {
-                  const r = await fetch(data.track.thumbnail, {
-                    signal: AbortSignal.any([
-                      c.signal,
-                      AbortSignal.timeout(5000),
-                    ]),
-                  });
-                  if (
-                    r.ok &&
-                    r.headers.get("Content-Type")?.startsWith("image/")
-                  )
-                    art = await r.blob();
-                }
-              } catch {}
-              if (c.signal.aborted)
-                throw new DOMException("취소", "AbortError");
-              if (!(await db.tracks.get(data.track.id))) {
-                await db.tracks.add({
-                  ...data.track,
-                  thumbnail: undefined,
-                  art,
-                  audio: blob,
-                  added: Date.now(),
-                });
-              }
-              complete = true;
-              chunks = [];
-            }
-          }
-        }
-        if (!complete)
-          throw new Error("연결이 중단되었습니다. 파일을 다시 받아 주세요.");
-        update({ state: "done", stage: "보관 완료", percent: 100 });
-        await refresh();
+        await api("jobs", {
+          url: t.url || "https://www.youtube.com/watch?v=" + t.id,
+          title: t.title === "URL에서 가져오기" ? "" : t.title,
+          artist: t.title === "URL에서 가져오기" ? "" : t.artist,
+          duration: t.duration || 0,
+          thumbnail: t.thumbnail,
+        });
       } catch (e) {
-        update(
-          c.signal.aborted
-            ? { state: "cancelled", stage: "취소됨" }
-            : { state: "error", error: errorText(e) },
-        );
-      } finally {
-        chunks = [];
-        running.current = false;
-        setJobs((old) => [...old]);
+        failed++;
+        setNotice(errorText(e));
       }
-    })();
-  }, [jobs, auth, consent, refresh]);
-  function cancel(job: Job) {
-    if (job.state === "running") abort.current?.abort();
-    else
-      setJobs((old) =>
-        old.map((j) => (j.key === job.key ? { ...j, state: "cancelled" } : j)),
+    }
+    if (fresh.length > failed)
+      setNotice(
+        agentOnline
+          ? `${fresh.length - failed}곡을 PC에 저장 요청했어요.`
+          : `${fresh.length - failed}곡을 대기열에 담았어요. PC 에이전트를 켜면 처리돼요.`,
       );
+    await syncJobs();
+  }
+  async function cancel(job: Job) {
+    try {
+      await api(`jobs/${job.id}`, undefined, undefined, "DELETE");
+      setJobs((old) => old.filter((j) => j.id !== job.id));
+    } catch (e) {
+      setNotice(errorText(e));
+    }
+  }
+  async function retry(job: Job) {
+    try {
+      if (job.status === "failed") await api(`jobs/${job.id}/retry`, {});
+      else await receive(job);
+      await syncJobs();
+    } catch (e) {
+      setNotice(errorText(e));
+    }
   }
   async function deleteSelected(ids: string[]) {
     if (!confirm(`${ids.length}곡을 기기에서 삭제할까요?`)) return;
@@ -745,7 +761,7 @@ export default function Home() {
           : b.added - a.added,
   );
   const pending = jobs.filter((j) =>
-    ["waiting", "running"].includes(j.state),
+    ["queued", "processing", "ready"].includes(j.status),
   ).length;
   const togglePlay = () => {
     if (playing) audio.current?.pause();
@@ -825,47 +841,6 @@ export default function Home() {
         </span>
         <p>{initPhase}</p>
         <LoaderCircle className="spin" size={20} />
-        {toast}
-      </div>
-    );
-  if (!consent)
-    return (
-      <div className="welcome">
-        <span className="eyebrow">YOUR MUSIC, YOUR SPACE</span>
-        <span className="brand-mark big">
-          <Music2 size={42} />
-        </span>
-        <h1>
-          좋아하는 소리를,
-          <br />
-          나만의 Tunely에.
-        </h1>
-        <p>한 번 담아두면, 연결 없이도 들을 수 있어요.</p>
-        <div className="consent-card">
-          <HardDrive />
-          <b>음악은 이 기기에만 보관돼요</b>
-          <p>
-            iOS 저장 공간 정리, 앱 또는 웹사이트 데이터 삭제 시 음악과
-            재생목록이 사라질 수 있어요. 백업·기기 간 동기화는 제공하지 않아요.
-          </p>
-          <p>저장할 권한이 있는 콘텐츠만 이용해 주세요.</p>
-        </div>
-        <button
-          className="primary wide"
-          onClick={async () => {
-            try {
-              await setSetting("consent-v1", true);
-              setConsent(true);
-              if (navigator.storage?.persist)
-                setPersistent(await navigator.storage.persist());
-            } catch (e) {
-              setNotice(errorText(e));
-            }
-          }}
-        >
-          확인했어요, 시작하기 <ChevronLeft className="flip" size={18} />
-        </button>
-        <small>처음 한 번만 확인합니다.</small>
         {toast}
       </div>
     );
@@ -1245,14 +1220,18 @@ export default function Home() {
                   <span>검색</span>
                 </button>
               </form>
-              <label className="permission">
-                <input
-                  type="checkbox"
-                  checked={permitted}
-                  onChange={(e) => setPermitted(e.target.checked)}
-                />
-                저장할 권한이 있는 콘텐츠만 다운로드합니다.
-              </label>
+              <p
+                className={
+                  "agent-status " + (agentOnline ? "online" : "offline")
+                }
+              >
+                <span className="dot" />
+                {agentOnline === undefined
+                  ? "PC 연결 상태를 확인하고 있어요."
+                  : agentOnline
+                    ? "PC가 연결되어 있어요. 저장하면 바로 처리돼요."
+                    : "PC가 꺼져 있어요. 저장 요청은 대기열에 남았다가 PC를 켜면 처리돼요."}
+              </p>
               {searching ? (
                 <div className="empty-state">
                   <LoaderCircle className="spin" />
@@ -1275,7 +1254,7 @@ export default function Home() {
                     </h3>
                     <button
                       className="primary"
-                      disabled={!picked.length || !permitted || offline}
+                      disabled={!picked.length || offline}
                       onClick={() =>
                         enqueue(results.filter((t) => picked.includes(t.id)))
                       }
@@ -1322,7 +1301,7 @@ export default function Home() {
                         <small>{t.artist}</small>
                         <button
                           className="text-button"
-                          disabled={!permitted || offline}
+                          disabled={offline}
                           onClick={() => enqueue([t])}
                         >
                           {tracks.some((x) => x.id === t.id) ? (
@@ -1550,7 +1529,7 @@ export default function Home() {
                         const r = await api("health");
                         const d = await r.json();
                         setHealth(
-                          `yt-dlp ${d.yt_dlp} · FFmpeg ${d.ffmpeg ? "준비됨" : "없음"} · Deno ${d.deno ? "준비됨" : "없음"}`,
+                          `서버 연결됨 · yt-dlp ${d.yt_dlp} · PC 에이전트 ${d.agent_online ? "연결됨" : "꺼짐"}`,
                         );
                       } catch (e) {
                         setHealth(errorText(e));
@@ -1598,75 +1577,67 @@ export default function Home() {
             <section className="queue-panel">
               <div className="queue-heading">
                 <h3>
-                  <ArrowDownToLine size={17} /> 다운로드{" "}
-                  {pending > 0 && <span>{pending}곡 진행 중</span>}
+                  <ArrowDownToLine size={17} /> PC 저장 대기열{" "}
+                  {pending > 0 && <span>{pending}곡</span>}
                 </h3>
-                <button
-                  className="text-button"
-                  onClick={() =>
-                    setJobs((j) =>
-                      j.filter((x) => ["waiting", "running"].includes(x.state)),
-                    )
+                <small
+                  className={
+                    "agent-status " + (agentOnline ? "online" : "offline")
                   }
                 >
-                  완료 기록 지우기
-                </button>
+                  <span className="dot" />
+                  {agentOnline ? "PC 연결됨" : "PC 꺼짐"}
+                </small>
               </div>
-              {jobs.map((j) => (
-                <div className="job" key={j.key}>
-                  <div>
-                    <b>{j.title}</b>
-                    <small className={j.state === "error" ? "danger" : ""}>
-                      {j.error ||
-                        j.stage ||
-                        (j.state === "waiting"
-                          ? "대기 중"
-                          : j.state === "cancelled"
-                            ? "취소됨"
-                            : "완료")}
-                      {j.state === "running" && j.percent != null
-                        ? ` · ${j.percent}%`
-                        : ""}
-                    </small>
-                    {j.state === "running" && (
-                      <progress max="100" value={j.percent ?? undefined} />
+              {jobs.map((j) => {
+                const failed = j.status === "failed" || !!j.receiveError;
+                const text =
+                  j.receiveError ||
+                  (j.status === "failed"
+                    ? j.error || "처리에 실패했습니다."
+                    : j.status === "queued"
+                      ? agentOnline
+                        ? "대기 중"
+                        : "PC를 켜면 처리돼요"
+                      : j.status === "processing"
+                        ? `PC ${j.stage || "처리 중"}${j.progress != null ? ` · ${j.progress}%` : ""}`
+                        : j.receiving
+                          ? "iPhone으로 받는 중"
+                          : "전송 대기");
+                return (
+                  <div className="job" key={j.id}>
+                    <div>
+                      <b>{j.title}</b>
+                      <small className={failed ? "danger" : ""}>{text}</small>
+                      {j.status === "processing" && (
+                        <progress max="100" value={j.progress ?? undefined} />
+                      )}
+                      {j.receiving && <progress max="100" />}
+                    </div>
+                    {failed && (
+                      <button
+                        className="text-button"
+                        disabled={offline}
+                        onClick={() => void retry(j)}
+                      >
+                        재시도
+                      </button>
+                    )}
+                    {j.receiving ? (
+                      <LoaderCircle className="spin" size={18} />
+                    ) : (
+                      <button
+                        className="icon"
+                        aria-label={`${j.title} 저장 취소`}
+                        disabled={offline}
+                        onClick={() => void cancel(j)}
+                      >
+                        <X size={17} />
+                      </button>
                     )}
                   </div>
-                  {["waiting", "running"].includes(j.state) ? (
-                    <button
-                      className="icon"
-                      aria-label={`${j.title} 다운로드 취소`}
-                      onClick={() => cancel(j)}
-                    >
-                      <X size={17} />
-                    </button>
-                  ) : j.state === "error" || j.state === "cancelled" ? (
-                    <button
-                      className="text-button"
-                      disabled={offline}
-                      onClick={() =>
-                        setJobs((old) =>
-                          old.map((x) =>
-                            x.key === j.key
-                              ? {
-                                  ...x,
-                                  state: "waiting",
-                                  error: undefined,
-                                  stage: undefined,
-                                  percent: undefined,
-                                }
-                              : x,
-                          ),
-                        )
-                      }
-                    >
-                      재시도
-                    </button>
-                  ) : (
-                    <Check size={18} />
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </section>
           )}
         </div>

@@ -1,6 +1,24 @@
 # Tunely · iPhone 음악 PWA MVP
 
-Next.js + TypeScript 프론트엔드, Vercel Python Function(FastAPI), yt-dlp, FFmpeg, Deno로 구성한 개인용 앱입니다. 오디오·커버·재생목록은 IndexedDB에만 영구 저장합니다. 서버에 완성 음원을 보관하지 않습니다.
+Next.js + TypeScript 프론트엔드, Vercel Python Function(FastAPI), Supabase(대기열·임시 파일), Windows PC 에이전트(yt-dlp, FFmpeg, Deno)로 구성한 개인용 앱입니다. 오디오·커버·재생목록은 iPhone의 IndexedDB에 영구 저장합니다. Supabase의 임시 파일은 iPhone이 받으면 즉시, 받지 않으면 3일 뒤 삭제합니다.
+
+## 저장 흐름
+
+Vercel에서 YouTube 다운로드가 봇으로 차단되어, 다운로드와 변환은 집 Windows PC에서 합니다.
+
+1. iPhone: 검색(Vercel) → 저장 → `POST /api/jobs`로 Supabase `jobs` 대기열에 등록
+2. PC 에이전트: `POST /api/agent/claim`으로 작업을 받아 다운로드·M4A 변환·썸네일 jpg 생성 → 서명 URL로 Supabase Storage `transfers`에 직접 업로드
+3. iPhone: 앱이 열려 있을 때 `GET /api/jobs`로 확인 → 음원·커버를 받아 보관함에 저장 → `received`로 서버 사본 삭제
+
+PC가 꺼져 있으면 요청은 대기열에 남습니다. 처리 중 15분 이상 소식이 없는 작업은 대기열로 되돌립니다.
+
+## Windows PC 에이전트
+
+1. Python 3.12와 Deno(`winget install DenoLand.Deno`)를 설치합니다.
+2. 이 저장소를 PC에 받고 `agent\.env.example`을 `agent\.env`로 복사해 `TUNELY_URL`, `AGENT_TOKEN`을 채웁니다. `AGENT_TOKEN`은 Vercel 환경변수와 같은 값입니다.
+3. `agent\run-agent.bat`을 실행합니다. 첫 실행에 `.venv`를 만들고, 매번 yt-dlp를 최신으로 올립니다. 창을 띄워 둔 동안 대기열을 처리하고, Ctrl+C로 종료합니다.
+
+필요한 Vercel 환경변수: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`(Supabase 대시보드 → Project Settings → API Keys의 secret key), `AGENT_TOKEN`, `CRON_SECRET`.
 
 ## iPhone에서 사용하기
 
@@ -16,9 +34,9 @@ Tunely는 **iPhone Safari에서 접속해 홈 화면에 설치하는 PWA**입니
 
 ## 사용
 
-1. 최초 보관 안내에 동의하고 로그인합니다. 로그인은 최초 인증부터 30일이며 자동 연장하지 않습니다.
+1. 로그인합니다. 로그인은 최초 인증부터 30일이며 자동 연장하지 않습니다.
 2. ‘음악 찾기’에서 YouTube 검색어 또는 HTTPS 영상 URL을 입력합니다.
-3. 저장 권한 확인 후 여러 곡을 선택하거나 한 곡씩 저장합니다. 순차 처리하고, 실패 건은 재시도할 수 있습니다.
+3. 여러 곡을 선택하거나 한 곡씩 저장합니다. PC 에이전트가 순서대로 처리하고, 실패 건은 재시도할 수 있습니다.
 4. 라이브러리에서 재생합니다. 로컬 오디오 파일 가져오기도 지원합니다.
 5. ‘선택’으로 일괄 삭제하거나 재생목록에 추가합니다. 음악의 `…` 메뉴에서 제목·아티스트·커버를 수정합니다. 재생목록을 연 상태에서 `…` → ‘목록 위/아래로’로 순서를 바꿉니다.
 6. 플레이어에서 셔플·한 곡/전체 반복·0.5–2배속을 설정합니다. 재실행 시 재생 위치와 대기열을 복원하되 자동으로 재생하지 않습니다.

@@ -1,9 +1,26 @@
-import asyncio, base64, json, os, tempfile, time, unittest
+import asyncio, json, os, time, unittest
 from pathlib import Path
 from unittest.mock import patch
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
-os.environ.update(APP_PASSWORD_HASH=PasswordHasher().hash('test-password-only'),SESSION_SECRET='x'*48,COOKIE_SECURE='false',APP_ORIGIN='http://testserver')
+os.environ.update(APP_PASSWORD_HASH=PasswordHasher().hash('test-password-only'),SESSION_SECRET='x'*48,COOKIE_SECURE='false',APP_ORIGIN='http://testserver',
+ SUPABASE_URL='https://example.supabase.co',SUPABASE_SECRET_KEY='k',AGENT_TOKEN='a'*40,CRON_SECRET='c'*32)
+JOB='0b8c6c1e-1111-4222-8333-444455556666'
+AGENT={'Authorization':'Bearer '+'a'*40}
+
+class FakeSupabase:
+ def __init__(self,existing=None,claim=None):self.calls=[];self.existing=existing or [];self.claim=claim or []
+ async def __call__(self,method,path,**kw):
+  self.calls.append((method,path,kw))
+  if path=='/rest/v1/agents' and method=='GET':
+   from datetime import datetime,timezone
+   return [{'last_seen':datetime.now(timezone.utc).isoformat()}]
+  if path=='/rest/v1/rpc/claim_job':return self.claim
+  if '/object/sign/' in path:return {'signedURL':'/object/sign/'+path.split('/sign/',1)[1]+'?token=t'}
+  if '/upload/sign/' in path:return {'url':'/object/upload/sign/'+path.split('/sign/',1)[1]+'?token=t'}
+  if method=='GET':return self.existing
+  if method=='POST' and path=='/rest/v1/jobs':return [{'id':JOB,**kw['json']}]
+  return None
 from api.index import app, canonical_url, signature, _attempts, stop
 
 class SecurityTests(unittest.TestCase):
@@ -33,48 +50,54 @@ class SecurityTests(unittest.TestCase):
  def test_csrf(self):
   r=self.c.post('/api/auth/login',json={'password':'test-password-only'},headers={'Origin':'https://evil.test'})
   self.assertEqual(r.status_code,403)
- def test_permission_and_invalid_url(self):
-  self.sign_in();self.assertEqual(self.c.post('/api/import/convert',json={'url':'https://youtu.be/QfzmglQwSCk','permitted':False}).status_code,400)
-  self.assertEqual(self.c.post('/api/import/convert',json={'url':'https://127.0.0.1','permitted':True}).status_code,400)
+ def test_job_requires_valid_youtube_url(self):
+  self.sign_in()
+  with patch('api.index.sb',FakeSupabase()):
+   self.assertEqual(self.c.post('/api/jobs',json={'url':'https://127.0.0.1'}).status_code,400)
  def test_throttle(self):
   for _ in range(5):self.c.post('/api/auth/login',json={'password':'bad'})
   self.assertEqual(self.c.post('/api/auth/login',json={'password':'bad'}).status_code,429)
- def test_stream_and_cleanup(self):
-  self.sign_in();folders=[]
-  async def fake_spawn(*args):
-   folder=Path(args[-1]);folders.append(folder);(folder/'audio.m4a').write_bytes(b'actual-test-audio')
-   script='import json; print(json.dumps({"type":"ready","track":{"id":"QfzmglQwSCk","title":"Test"}}),flush=True)'
-   return await asyncio.create_subprocess_exec(os.sys.executable,'-c',script,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,start_new_session=True)
-  with patch('api.index.spawn',fake_spawn):
-   r=self.c.post('/api/import/convert',json={'url':'https://youtu.be/QfzmglQwSCk','permitted':True})
-  events=[json.loads(x) for x in r.text.splitlines()];self.assertEqual(events[-1]['type'],'done')
-  self.assertEqual(b''.join(base64.b64decode(x['data']) for x in events if x['type']=='audio'),b'actual-test-audio')
-  self.assertTrue(all(not p.exists() for p in folders))
- def test_failed_stream_cleans_up(self):
-  self.sign_in();folders=[]
-  async def fake_spawn(*args):
-   folder=Path(args[-1]);folders.append(folder);(folder/'partial.part').write_bytes(b'partial')
-   return await asyncio.create_subprocess_exec(os.sys.executable,'-c','raise SystemExit(1)',stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,start_new_session=True)
-  with patch('api.index.spawn',fake_spawn):r=self.c.post('/api/import/convert',json={'url':'https://youtu.be/QfzmglQwSCk','permitted':True})
-  self.assertEqual(json.loads(r.text.splitlines()[-1])['type'],'error');self.assertTrue(all(not p.exists() for p in folders))
+ def test_create_job_without_permission_flag(self):
+  self.sign_in();fake=FakeSupabase()
+  with patch('api.index.sb',fake):
+   r=self.c.post('/api/jobs',json={'url':'https://youtu.be/QfzmglQwSCk','title':'Song'})
+  self.assertEqual(r.status_code,200)
+  inserted=[c for c in fake.calls if c[0]=='POST' and c[1]=='/rest/v1/jobs'][0][2]['json']
+  self.assertEqual(inserted['video_id'],'QfzmglQwSCk');self.assertTrue(inserted['thumbnail'].startswith('https://i.ytimg.com/'))
+ def test_existing_active_job_is_not_duplicated(self):
+  self.sign_in();fake=FakeSupabase(existing=[{'id':'x','video_id':'QfzmglQwSCk'}])
+  with patch('api.index.sb',fake):
+   r=self.c.post('/api/jobs',json={'url':'https://youtu.be/QfzmglQwSCk'})
+  self.assertEqual(r.json()['id'],'x');self.assertFalse([c for c in fake.calls if c[0]=='POST'])
+ def test_list_jobs_signs_ready_files(self):
+  self.sign_in();fake=FakeSupabase(existing=[{'id':JOB,'status':'ready'},{'id':'q','status':'queued'}])
+  with patch('api.index.sb',fake):r=self.c.get('/api/jobs').json()
+  self.assertTrue(r['jobs'][0]['audio_url'].endswith('/audio.m4a?token=t'));self.assertNotIn('audio_url',r['jobs'][1])
+  self.assertTrue(r['agent']['online'])
+ def test_received_deletes_files(self):
+  self.sign_in();fake=FakeSupabase()
+  with patch('api.index.sb',fake):self.assertEqual(self.c.post(f'/api/jobs/{JOB}/received',json={}).status_code,200)
+  self.assertIn(('DELETE','/storage/v1/object/transfers'),[c[:2] for c in fake.calls])
+  self.assertEqual(self.c.post('/api/jobs/../x/received',json={}).status_code,404)
+ def test_agent_requires_token(self):
+  with patch('api.index.sb',FakeSupabase()):
+   self.assertEqual(self.c.post('/api/agent/claim').status_code,401)
+   self.assertEqual(self.c.post('/api/agent/claim',headers={'Authorization':'Bearer wrong'}).status_code,401)
+   self.sign_in();self.assertEqual(self.c.post('/api/agent/claim').status_code,401)
+ def test_agent_claim_returns_upload_urls(self):
+  fake=FakeSupabase(claim=[{'id':JOB,'video_id':'QfzmglQwSCk','title':'t','artist':'a','duration':1,'thumbnail':None}])
+  with patch('api.index.sb',fake):r=self.c.post('/api/agent/claim',headers=AGENT).json()
+  self.assertEqual(r['job']['url'],'https://www.youtube.com/watch?v=QfzmglQwSCk')
+  self.assertIn('/upload/sign/',r['job']['upload']['audio'])
+ def test_agent_progress_on_cancelled_job_conflicts(self):
+  with patch('api.index.sb',FakeSupabase(existing=[])):
+   self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/progress',json={'stage':'다운로드','percent':5},headers=AGENT).status_code,409)
+ def test_cron_requires_secret(self):
+  with patch('api.index.sb',FakeSupabase(existing=[{'id':JOB}])):
+   self.assertEqual(self.c.get('/api/cron/cleanup').status_code,401)
+   self.assertEqual(self.c.get('/api/cron/cleanup',headers={'Authorization':'Bearer '+'c'*32}).json(),{'deleted':1})
 
 class CancellationTests(unittest.IsolatedAsyncioTestCase):
- async def test_disconnect_stops_process_and_removes_partial_file(self):
-  started=asyncio.Event();folders=[];processes=[]
-  async def fake_spawn(*args):
-   folder=Path(args[-1]);folders.append(folder);(folder/'partial.part').write_bytes(b'partial')
-   proc=await asyncio.create_subprocess_exec(os.sys.executable,'-c','import time; time.sleep(120)',stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,start_new_session=True)
-   processes.append(proc);started.set();return proc
-  body=json.dumps({'url':'https://youtu.be/QfzmglQwSCk','permitted':True}).encode()
-  value=f'{int(time.time())+1000}.disconnecttest';token=value+'.'+signature(value)
-  sent=[False]
-  async def receive():
-   if not sent[0]:sent[0]=True;return {'type':'http.request','body':body,'more_body':False}
-   await started.wait();await asyncio.sleep(.05);return {'type':'http.disconnect'}
-  async def send(message):pass
-  scope={'type':'http','asgi':{'version':'3.0','spec_version':'2.3'},'http_version':'1.1','method':'POST','scheme':'http','path':'/api/import/convert','raw_path':b'/api/import/convert','query_string':b'','root_path':'','server':('testserver',80),'client':('127.0.0.1',1234),'headers':[(b'content-type',b'application/json'),(b'cookie',('soriham_session='+token).encode())]}
-  with patch('api.index.spawn',fake_spawn):await asyncio.wait_for(app(scope,receive,send),5)
-  self.assertTrue(folders);self.assertTrue(all(not f.exists() for f in folders));self.assertTrue(all(p.returncode is not None for p in processes))
  async def test_stop_kills_process_group(self):
   proc=await asyncio.create_subprocess_exec(os.sys.executable,'-c','import time; time.sleep(120)',start_new_session=True)
   await stop(proc);self.assertIsNotNone(proc.returncode)
