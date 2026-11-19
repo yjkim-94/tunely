@@ -13,6 +13,8 @@ export type Track = {
   parts?: number;
   /** Total audio bytes for chunked tracks. */
   size?: number;
+  /** "aac" when YouTube's AAC audio was kept as is; otherwise the codec converted from. */
+  codec?: string;
   added: number;
 };
 export type Part = { track: string; index: number; blob: Blob };

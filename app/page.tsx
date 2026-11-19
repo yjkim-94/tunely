@@ -87,6 +87,7 @@ type Job = {
   stage?: string | null;
   error?: string | null;
   size?: number | null;
+  source_codec?: string | null;
   audio_urls?: string[];
   cover_url?: string;
   receiving?: boolean;
@@ -619,6 +620,7 @@ export default function Home() {
               artist: job.artist,
               duration: job.duration,
               url: "https://www.youtube.com/watch?v=" + job.video_id,
+              codec: job.source_codec || undefined,
               art: art?.size
                 ? new Blob([art], { type: "image/jpeg" })
                 : undefined,
@@ -907,7 +909,17 @@ export default function Home() {
           <Cover track={t} />
           <span>
             <b>{t.title}</b>
-            <small>{t.artist}</small>
+            <small>
+              {t.codec === "aac" && (
+                <span
+                  className="codec-badge"
+                  title="YouTube AAC 음원을 변환 없이 저장"
+                >
+                  AAC 원본
+                </span>
+              )}
+              {t.artist}
+            </small>
           </span>
         </button>
         <span className="track-duration">{fmt(t.duration)}</span>
