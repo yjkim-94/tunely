@@ -18,6 +18,9 @@ NAME = os.getenv('AGENT_NAME') or socket.gethostname()
 POLL = 5
 # Supabase free plan caps each upload at 50MB; long mixes are sent in pieces.
 CHUNK = 40 * 1024 * 1024
+# Prefer YouTube's AAC stream (itag 140, ~128kbps) so FFmpeg only remuxes it in
+# seconds; fall back to Opus etc. (re-encoded) when a video has no m4a audio.
+FORMAT = 'bestaudio[ext=m4a]/bestaudio/best'
 
 
 class Cancelled(Exception):
@@ -115,7 +118,7 @@ def process(job, folder):
 
     report('다운로드', None, True)
     opts = {'quiet': True, 'no_warnings': True, 'noplaylist': True, 'socket_timeout': 20, 'retries': 3,
-            'fragment_retries': 3, 'format': 'bestaudio/best', 'outtmpl': str(folder / 'source.%(ext)s'),
+            'fragment_retries': 3, 'format': FORMAT, 'outtmpl': str(folder / 'source.%(ext)s'),
             'progress_hooks': [hook], 'remote_components': ['ejs:github']}
     if deno():
         opts['js_runtimes'] = {'deno': {'path': deno()}}
