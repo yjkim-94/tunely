@@ -24,12 +24,14 @@ def run():
     mode,target=sys.argv[1:3]
     opts={'quiet':True,'no_warnings':True,'logger':Logger(),'noplaylist':True,'socket_timeout':15,'retries':1,'fragment_retries':1,'cachedir':False,'remote_components':['ejs:github'],'js_runtimes':{'deno':{'path':runtime()}} if runtime() else {}}
     if mode=='search':
+        # yt-dlp cannot resume a search, so "more" re-reads from the top with a larger limit.
+        limit=min(60,max(1,int(sys.argv[4]))) if len(sys.argv)>4 and sys.argv[4].isdigit() else 20
         # approximate_date turns "3 years ago" into a timestamp for flat results.
-        opts.update({'extract_flat':'in_playlist','skip_download':True,'ignoreerrors':False,'playlistend':20,
+        opts.update({'extract_flat':'in_playlist','skip_download':True,'ignoreerrors':False,'playlistend':limit,
                      'extractor_args':{'youtubetab':{'approximate_date':['']}}})
         # YouTube's own sort (videos only): upload date / view count.
         sp={'date':'CAISAhAB','views':'CAMSAhAB'}.get(sys.argv[3] if len(sys.argv)>3 else '')
-        source=f'https://www.youtube.com/results?search_query={quote_plus(target)}&sp={sp}' if sp else 'ytsearch20:'+target
+        source=f'https://www.youtube.com/results?search_query={quote_plus(target)}&sp={sp}' if sp else f'ytsearch{limit}:'+target
         with yt_dlp.YoutubeDL(opts) as y:
             info=y.extract_info(source,download=False)
             emit(type='results',items=[metadata(x) for x in (info or {}).get('entries',[]) if x and x.get('id')])

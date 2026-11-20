@@ -62,8 +62,10 @@ class SecurityTests(unittest.TestCase):
    return await asyncio.create_subprocess_exec(os.sys.executable,'-c','import json;print(json.dumps({"items":[{"id":"QfzmglQwSCk","views":123456}]}))',stdout=asyncio.subprocess.PIPE,start_new_session=True)
   with patch('api.index.spawn',fake_spawn):
    r=self.c.post('/api/search',json={'query':'lofi','sort':'views'})
-   self.assertEqual(r.json()[0]['views'],123456);self.assertEqual(seen[-1],('search','lofi','views'))
+   self.assertEqual(r.json()[0]['views'],123456);self.assertEqual(seen[-1],('search','lofi','views','20'))
    self.assertEqual(self.c.post('/api/search',json={'query':'lofi','sort':'random'}).status_code,422)
+   self.c.post('/api/search',json={'query':'lofi','limit':60});self.assertEqual(seen[-1],('search','lofi','relevance','60'))
+   self.assertEqual(self.c.post('/api/search',json={'query':'lofi','limit':80}).status_code,422)
  def test_agent_complete_records_source_codec(self):
   fake=FakeSupabase(existing=[{'id':JOB}])
   with patch('api.index.sb',fake):

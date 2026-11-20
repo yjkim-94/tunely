@@ -3,7 +3,7 @@
 Polls the Tunely server for queued save requests, downloads the audio with
 yt-dlp on this PC's home network, converts it to M4A with FFmpeg and uploads
 the result to temporary storage. The iPhone app picks it up from there.
-Run with run-agent.bat. Stop with Ctrl+C.
+Run with run-agent.bat in the repository root. Stop with Ctrl+C.
 """
 import os, re, shutil, socket, subprocess, sys, tempfile, time, unicodedata
 from pathlib import Path
