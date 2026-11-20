@@ -106,6 +106,31 @@ class SecurityTests(unittest.TestCase):
   self.assertEqual(deleted,[f'{JOB}/audio.000',f'{JOB}/cover.jpg'])
   self.assertIn(('DELETE','/rest/v1/jobs'),[c[:2] for c in fake.calls])
   self.assertEqual(self.c.post('/api/jobs/../x/received',json={}).status_code,404)
+ def test_received_backs_up_track_text_only(self):
+  self.sign_in();fake=FakeSupabase(existing=[{'video_id':'QfzmglQwSCk','title':'Song','artist':'A','duration':200,'source_codec':'aac'}])
+  with patch('api.index.sb',fake):self.assertEqual(self.c.post(f'/api/jobs/{JOB}/received',json={}).status_code,200)
+  ins=[c for c in fake.calls if c[:2]==('POST','/rest/v1/library_tracks')][0]
+  self.assertEqual(ins[2]['json'],{'video_id':'QfzmglQwSCk','title':'Song','artist':'A','duration':200,'codec':'aac'})
+  self.assertEqual(ins[2]['headers'],{'Prefer':'resolution=ignore-duplicates'})
+ def test_library_sync_and_fetch(self):
+  self.sign_in();fake=FakeSupabase(existing=[{'video_id':'QfzmglQwSCk','title':'t','artist':'a','duration':1,'codec':None}])
+  body={'tracks':[{'video_id':'QfzmglQwSCk','title':'Edited','artist':'a','duration':1,'codec':'aac'}],'delete_tracks':['AAAAAAAAAAA'],
+        'playlists':[{'id':'pl-1','name':'출근','tracks':['QfzmglQwSCk']}],'delete_playlists':['pl-2']}
+  with patch('api.index.sb',fake):
+   self.assertEqual(self.c.post('/api/library/sync',json=body).status_code,200)
+   self.assertEqual(self.c.post('/api/library/sync',json={'delete_tracks':['../x']}).status_code,400)
+   self.assertEqual(self.c.post('/api/library/sync',json={'tracks':[{'video_id':'bad','title':'','artist':'','duration':0}]}).status_code,422)
+   self.assertEqual(self.c.get('/api/library').json()['tracks'][0]['video_id'],'QfzmglQwSCk')
+  calls=[c[:2] for c in fake.calls]
+  self.assertIn(('POST','/rest/v1/library_tracks'),calls);self.assertIn(('POST','/rest/v1/library_playlists'),calls)
+  dels=[c[2]['params'] for c in fake.calls if c[0]=='DELETE']
+  self.assertIn({'video_id':'in.("AAAAAAAAAAA")'},dels);self.assertIn({'id':'in.("pl-2")'},dels)
+ def test_library_requires_login_and_allows_large_sync(self):
+  self.assertEqual(self.c.get('/api/library').status_code,401)
+  self.sign_in();big={'tracks':[{'video_id':'QfzmglQwSCk','title':'x'*290,'artist':'y'*190,'duration':1} for _ in range(300)]}
+  with patch('api.index.sb',FakeSupabase()):
+   self.assertEqual(self.c.post('/api/library/sync',json=big).status_code,200)
+   self.assertEqual(self.c.post('/api/jobs',json={'url':'https://youtu.be/QfzmglQwSCk','title':'x'*9000}).status_code,413)
  def test_agent_requires_token(self):
   with patch('api.index.sb',FakeSupabase()):
    self.assertEqual(self.c.post('/api/agent/claim').status_code,401)
