@@ -73,6 +73,19 @@ class SecurityTests(unittest.TestCase):
   with patch('api.index.sb',fake):
    self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/complete',json={'title':'t','artist':'a','duration':1,'source_codec':'aac'},headers=AGENT).status_code,200)
   self.assertEqual([c for c in fake.calls if c[0]=='PATCH'][0][2]['json']['source_codec'],'aac')
+ def test_complete_stores_peaks_clamped(self):
+  fake=FakeSupabase(existing=[{'id':JOB}])
+  with patch('api.index.sb',fake):
+   self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/complete',json={'title':'t','artist':'a','duration':1,'peaks':[0,50,100,130]},headers=AGENT).status_code,200)
+   self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/complete',json={'title':'t','artist':'a','duration':1,'peaks':[1]*1001},headers=AGENT).status_code,422)
+  self.assertEqual([c for c in fake.calls if c[0]=='PATCH'][0][2]['json']['peaks'],[0,50,100,100])
+ def test_library_sync_keeps_trim(self):
+  self.sign_in();fake=FakeSupabase()
+  with patch('api.index.sb',fake):
+   self.assertEqual(self.c.post('/api/library/sync',json={'tracks':[{'video_id':'QfzmglQwSCk','title':'t','artist':'a','duration':271,'trim_start':42,'trim_end':245.5}]}).status_code,200)
+   self.assertEqual(self.c.post('/api/library/sync',json={'tracks':[{'video_id':'QfzmglQwSCk','title':'t','artist':'a','duration':271,'trim_start':-1}]}).status_code,422)
+  row=[c for c in fake.calls if c[:2]==('POST','/rest/v1/library_tracks')][0][2]['json'][0]
+  self.assertEqual((row['trim_start'],row['trim_end']),(42,245.5))
  def test_agent_fail_strips_signed_urls(self):
   fake=FakeSupabase(existing=[{'id':JOB}])
   with patch('api.index.sb',fake):

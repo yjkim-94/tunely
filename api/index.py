@@ -35,6 +35,7 @@ class Complete(BaseModel):
     artist:str=Field(max_length=200)
     duration:int=Field(ge=0,le=86400)
     source_codec:str|None=Field(default=None,max_length=20)
+    peaks:list[int]|None=Field(default=None,max_length=1000)
 class Fail(BaseModel): error:str=Field(max_length=500)
 VIDEO_ID=r'^[A-Za-z0-9_-]{11}$'
 class LibTrack(BaseModel):
@@ -43,6 +44,8 @@ class LibTrack(BaseModel):
     artist:str=Field(max_length=200)
     duration:int=Field(ge=0,le=86400)
     codec:str|None=Field(default=None,max_length=20)
+    trim_start:float|None=Field(default=None,ge=0,le=86400)
+    trim_end:float|None=Field(default=None,gt=0,le=86400)
 class LibPlaylist(BaseModel):
     id:str=Field(min_length=1,max_length=64)
     name:str=Field(max_length=100)
@@ -174,7 +177,7 @@ async def search(body:Search,request:Request,token=Depends(auth)):
 # Download queue. Windows PC agent does the YouTube work; Supabase holds the
 # queue (jobs table) and the transient files (transfers bucket).
 BUCKET='transfers'
-JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at,parts,size,source_codec'
+JOB_FIELDS='id,video_id,title,artist,duration,thumbnail,status,progress,stage,error,created_at,ready_at,parts,size,source_codec,peaks'
 AGENT_ONLINE=30
 RETENTION_DAYS=3
 
@@ -313,7 +316,7 @@ async def agent_progress(request:Request,id:str,body:Progress,_=Depends(agent)):
 @app.post('/api/agent/jobs/{id}/complete')
 async def agent_complete(request:Request,id:str,body:Complete,_=Depends(agent)):
     await agent_job(id);await touch_agent(request)
-    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'ready','title':body.title,'artist':body.artist,'duration':body.duration,'source_codec':body.source_codec,'stage':'전송 대기','progress':100,'ready_at':'now'})
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'ready','title':body.title,'artist':body.artist,'duration':body.duration,'source_codec':body.source_codec,'peaks':[max(0,min(100,v)) for v in body.peaks] if body.peaks else None,'stage':'전송 대기','progress':100,'ready_at':'now'})
     await notify({'title':'저장 준비 완료','body':f'{body.title} · Tunely를 열면 보관함에 담아요.','tag':id})
     return {'ok':True}
 
@@ -351,7 +354,7 @@ async def cleanup(request:Request):
 # library can be re-requested after the phone loses its app data.
 @app.get('/api/library')
 async def library(token=Depends(auth)):
-    tracks=await sb('GET','/rest/v1/library_tracks',params={'select':'video_id,title,artist,duration,codec,added_at','order':'added_at.asc'})
+    tracks=await sb('GET','/rest/v1/library_tracks',params={'select':'video_id,title,artist,duration,codec,trim_start,trim_end,added_at','order':'added_at.asc'})
     playlists=await sb('GET','/rest/v1/library_playlists',params={'select':'id,name,tracks,updated_at','order':'updated_at.asc'})
     return {'tracks':tracks,'playlists':playlists}
 

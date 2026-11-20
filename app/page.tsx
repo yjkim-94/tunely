@@ -46,6 +46,7 @@ import {
   setting,
   setSetting,
   trackAudio,
+  trackRange,
   trackSize,
   type Track,
   type Playlist,
@@ -58,6 +59,8 @@ import {
   setSyncPoster,
   syncStatus,
 } from "./sync";
+import { Cover } from "./cover";
+import { TrimSheet } from "./trim";
 
 if (typeof window !== "undefined") installSyncHooks();
 type LibTrack = {
@@ -66,6 +69,8 @@ type LibTrack = {
   artist: string;
   duration: number;
   codec?: string | null;
+  trim_start?: number | null;
+  trim_end?: number | null;
 };
 type LibPlaylist = { id: string; name: string; tracks: string[] };
 type PushState = "unsupported" | "off" | "on" | "denied" | "busy";
@@ -147,6 +152,7 @@ type Job = {
   receiving?: boolean;
   receivePercent?: number;
   receiveError?: string;
+  peaks?: number[] | null;
 };
 type Saved = {
   id?: string;
@@ -222,32 +228,6 @@ function canonicalClient(raw: string) {
     throw new Error("올바른 YouTube 영상 URL을 입력해 주세요.");
   return { id, url: "https://www.youtube.com/watch?v=" + id };
 }
-function Cover({
-  track,
-  large = false,
-}: {
-  track?: Pick<Track, "id" | "art" | "thumbnail">;
-  large?: boolean;
-}) {
-  const [src, setSrc] = useState<string>();
-  useEffect(() => {
-    if (track?.art) {
-      const s = URL.createObjectURL(track.art);
-      setSrc(s);
-      return () => URL.revokeObjectURL(s);
-    }
-    setSrc(track?.thumbnail);
-  }, [track?.id, track?.art, track?.thumbnail]);
-  return (
-    <div className={"cover " + (large ? "large" : "")}>
-      {src ? (
-        <img src={src} alt="" onError={() => setSrc(undefined)} />
-      ) : (
-        <Music2 size={large ? 68 : 24} />
-      )}
-    </div>
-  );
-}
 export default function Home() {
   const [initPhase, setInitPhase] = useState("저장소를 확인하고 있어요"),
     [ready, setReady] = useState(false),
@@ -282,6 +262,14 @@ export default function Home() {
     [restoreBusy, setRestoreBusy] = useState(false),
     [pushState, setPushState] = useState<PushState>();
   const look = useLook();
+  const [trimFor, setTrimFor] = useState<Track>();
+  // iOS Safari keeps media volume read-only, so fades only work elsewhere.
+  const [canFade, setCanFade] = useState(true);
+  useEffect(() => {
+    const probe = new Audio();
+    probe.volume = 0.5;
+    setCanFade(Math.abs(probe.volume - 0.5) < 0.01);
+  }, []);
   useEffect(() => {
     // Re-apply once on mount so the status-bar colour matches (the inline script ran earlier).
     applyLook(getLook());
@@ -516,10 +504,12 @@ export default function Home() {
       if (!ids.length) return;
       if (ended && repeat === "one") {
         if (audio.current) {
-          audio.current.currentTime = 0;
+          const r = trackRange(current);
+          audio.current.currentTime =
+            r.trimmed && !(trimFor && trimFor.id === current?.id) ? r.start : 0;
           void audio.current
             .play()
-            .catch(() => setNotice("재生ボタンを 눌러 주세요."));
+            .catch(() => setNotice("재생 버튼을 눌러 주세요."));
         }
         return;
       }
@@ -539,7 +529,7 @@ export default function Home() {
         void playTrack(t);
       }
     },
-    [queue, tracks, current, repeat, shuffle, playTrack],
+    [queue, tracks, current, repeat, shuffle, playTrack, trimFor],
   );
   useEffect(() => {
     if (!("mediaSession" in navigator) || !current) return;
@@ -560,8 +550,10 @@ export default function Home() {
       previoustrack: () => next(-1),
       nexttrack: () => next(),
       seekto: (d) => {
-        if (audio.current && d.seekTime !== undefined)
-          audio.current.currentTime = d.seekTime;
+        if (audio.current && d.seekTime !== undefined) {
+          const { enforce: on, start } = enforceRef.current;
+          audio.current.currentTime = (on ? start : 0) + d.seekTime;
+        }
       },
       // iOS shows either ±10s or previous/next on the lock screen, never both.
       // Clearing the seek actions makes it show previous/next track buttons.
@@ -720,6 +712,13 @@ export default function Home() {
               duration: job.duration,
               url: "https://www.youtube.com/watch?v=" + job.video_id,
               codec: job.source_codec || undefined,
+              peaks: job.peaks || undefined,
+              trim: (() => {
+                const m = serverMeta.current.get(job.video_id);
+                return m?.trim_end
+                  ? { start: m.trim_start || 0, end: m.trim_end }
+                  : undefined;
+              })(),
               art: art?.size
                 ? new Blob([art], { type: "image/jpeg" })
                 : undefined,
@@ -1109,15 +1108,61 @@ export default function Home() {
       el.parentElement?.style.setProperty("--sheet-fade", "1");
     }
   };
+  // 구간: the saved range applies unless the trim sheet is open for this very track.
+  const editingTrim = !!trimFor && trimFor.id === current?.id;
+  const rng = trackRange(current, duration);
+  const enforce = rng.trimmed && !editingTrim;
+  const viewStart = enforce ? rng.start : 0;
+  const viewEnd = enforce ? rng.end : duration;
+  const viewDur = Math.max(0, viewEnd - viewStart);
+  const viewPos = Math.min(viewDur, Math.max(0, position - viewStart));
+  const seekView = (v: number) => {
+    if (!audio.current) return;
+    audio.current.currentTime = viewStart + v;
+    setPosition(viewStart + v);
+  };
   const seekBy = (delta: number) => {
     const a = audio.current;
     if (!a) return;
+    const end = Number.isFinite(a.duration)
+      ? a.duration
+      : a.currentTime + delta;
     a.currentTime = Math.min(
-      Math.max(0, a.currentTime + delta),
-      Number.isFinite(a.duration) ? a.duration : a.currentTime + delta,
+      Math.max(enforce ? rng.start : 0, a.currentTime + delta),
+      enforce ? rng.end - 0.2 : end,
     );
     setPosition(a.currentTime);
   };
+  // Stop at the end point, keep out of the skipped parts and fade where the platform allows.
+  const enforceRef = useRef({ enforce, start: rng.start, end: rng.end });
+  enforceRef.current = { enforce, start: rng.start, end: rng.end };
+  const nextRef = useRef(next);
+  nextRef.current = next;
+  useEffect(() => {
+    const a = audio.current;
+    if (!a) return;
+    if (!playing) return;
+    let raf = 0;
+    const tick = () => {
+      const { enforce: on, start, end } = enforceRef.current;
+      if (on && end > start) {
+        const t = a.currentTime;
+        if (t < start - 0.25) a.currentTime = start;
+        else if (t >= end - 0.03) {
+          a.volume = 1;
+          nextRef.current(1, true);
+          return;
+        } else if (canFade) {
+          const fadeIn = start > 0 ? (t - start) / 0.5 : 1;
+          const fadeOut = (end - t) / 1;
+          a.volume = Math.max(0, Math.min(1, fadeIn, fadeOut));
+        }
+      } else if (a.volume !== 1) a.volume = 1;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, current?.id, canFade]);
   const togglePlay = () => {
     if (playing) audio.current?.pause();
     else
@@ -1170,6 +1215,7 @@ export default function Home() {
           <span>
             <b>{t.title}</b>
             <small>
+              {t.trim && <span className="codec-badge">구간</span>}
               {t.codec === "aac" && (
                 <span
                   className="codec-badge"
@@ -1182,7 +1228,9 @@ export default function Home() {
             </small>
           </span>
         </button>
-        <span className="track-duration">{fmt(t.duration)}</span>
+        <span className="track-duration">
+          {fmt(t.trim ? trackRange(t).length : t.duration)}
+        </span>
         <button
           className="icon subtle"
           aria-label={`${t.title} 수정`}
@@ -2253,6 +2301,13 @@ export default function Home() {
             a.currentTime = seekRef.current;
             seekRef.current = null;
           }
+          const r = trackRange(current, a.duration);
+          if (
+            r.trimmed &&
+            !(trimFor && trimFor.id === current?.id) &&
+            (a.currentTime < r.start - 0.05 || a.currentTime >= r.end - 0.5)
+          )
+            a.currentTime = r.start;
           if (playOnLoad.current) {
             playOnLoad.current = false;
             void a.play().catch(() => setNotice("재생 버튼을 눌러 주세요."));
@@ -2273,9 +2328,14 @@ export default function Home() {
             a.duration > 0
           ) {
             try {
+              const { enforce: on, start, end } = enforceRef.current;
+              const d = on ? end - start : a.duration;
               navigator.mediaSession.setPositionState({
-                duration: a.duration,
-                position: Math.min(a.currentTime, a.duration),
+                duration: d,
+                position: Math.min(
+                  Math.max(0, a.currentTime - (on ? start : 0)),
+                  d,
+                ),
                 playbackRate: a.playbackRate,
               });
             } catch {}
@@ -2359,27 +2419,22 @@ export default function Home() {
               </button>
             </div>
             <div className="seek">
-              <span>{fmt(position)}</span>
+              <span>{fmt(viewPos)}</span>
               <input
                 aria-label="재생 위치"
                 style={
                   {
-                    "--pct": `${duration ? Math.min(100, (position / duration) * 100) : 0}%`,
+                    "--pct": `${viewDur ? Math.min(100, (viewPos / viewDur) * 100) : 0}%`,
                   } as React.CSSProperties
                 }
                 type="range"
                 min="0"
-                max={duration || 1}
+                max={viewDur || 1}
                 step="0.1"
-                value={Math.min(position, duration || 0)}
-                onChange={(e) => {
-                  if (audio.current) {
-                    audio.current.currentTime = Number(e.target.value);
-                    setPosition(Number(e.target.value));
-                  }
-                }}
+                value={viewPos}
+                onChange={(e) => seekView(Number(e.target.value))}
               />
-              <span>{fmt(duration)}</span>
+              <span>{fmt(viewDur)}</span>
             </div>
           </div>
           <div className="player-extra">
@@ -2455,26 +2510,28 @@ export default function Home() {
             <h2>{current.title}</h2>
             <p>{current.artist}</p>
             <div className="seek">
-              <span>{fmt(position)}</span>
+              <span>{fmt(viewPos)}</span>
               <input
                 aria-label="전체 플레이어 재생 위치"
                 style={
                   {
-                    "--pct": `${duration ? Math.min(100, (position / duration) * 100) : 0}%`,
+                    "--pct": `${viewDur ? Math.min(100, (viewPos / viewDur) * 100) : 0}%`,
                   } as React.CSSProperties
                 }
                 type="range"
-                max={duration || 1}
-                value={Math.min(position, duration || 0)}
+                max={viewDur || 1}
+                value={viewPos}
                 step="0.1"
-                onChange={(e) => {
-                  if (audio.current)
-                    audio.current.currentTime = Number(e.target.value);
-                  setPosition(Number(e.target.value));
-                }}
+                onChange={(e) => seekView(Number(e.target.value))}
               />
-              <span>{fmt(duration)}</span>
+              <span>{fmt(viewDur)}</span>
             </div>
+            {enforce && (
+              <p className="trim-playing">
+                <span className="trim-stamp">구간</span>
+                원본 {fmt(rng.start)}–{fmt(rng.end)} 재생 중
+              </p>
+            )}
             <div className="skip-row">
               <button
                 className="text-button"
@@ -2643,6 +2700,21 @@ export default function Home() {
                 }}
               />
             </label>
+            <button
+              type="button"
+              className="secondary wide trim-open"
+              onClick={() => {
+                const t = tracks.find((x) => x.id === edit.id) || edit;
+                setEdit(undefined);
+                setExpanded(false);
+                setTrimFor(t);
+              }}
+            >
+              구간 설정
+              {edit.trim
+                ? ` · ${fmt(edit.trim.start)}–${fmt(edit.trim.end)}`
+                : ""}
+            </button>
             <div className="dialog-actions">
               <button
                 className="text-button danger"
@@ -2914,6 +2986,58 @@ export default function Home() {
             </button>
           </div>
         </div>
+      )}
+      {trimFor && (
+        <TrimSheet
+          track={trimFor}
+          fullDuration={
+            trimFor.id === current?.id && duration ? duration : trimFor.duration
+          }
+          isCurrent={trimFor.id === current?.id}
+          position={position}
+          canFade={canFade}
+          onPlayFrom={(sec) => {
+            if (trimFor.id === current?.id && audio.current) {
+              audio.current.currentTime = sec;
+              setPosition(sec);
+              void audio.current.play().catch(() => {});
+            } else {
+              seekRef.current = sec;
+              playOnLoad.current = true;
+              setQueue((q) =>
+                q.includes(trimFor.id) ? q : [trimFor.id, ...q],
+              );
+              setPosition(sec);
+              setCurrent(trimFor);
+            }
+          }}
+          onSeek={(sec) => {
+            if (audio.current) audio.current.currentTime = sec;
+            setPosition(sec);
+          }}
+          onSave={async (range) => {
+            try {
+              const trim = range
+                ? {
+                    start: Math.round(range.start * 10) / 10,
+                    end: Math.round(range.end * 10) / 10,
+                  }
+                : undefined;
+              await db.tracks.update(trimFor.id, { trim });
+              if (current?.id === trimFor.id) setCurrent({ ...current, trim });
+              await refresh();
+              setNotice(
+                trim
+                  ? `구간을 저장했어요 (${fmt(trim.start)}–${fmt(trim.end)}).`
+                  : "구간을 없앴어요. 처음부터 끝까지 재생해요.",
+              );
+              setTrimFor(undefined);
+            } catch (e) {
+              setNotice(errorText(e));
+            }
+          }}
+          onClose={() => setTrimFor(undefined)}
+        />
       )}
       {addToList && (
         <div className="modal-backdrop">

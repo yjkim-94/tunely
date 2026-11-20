@@ -15,6 +15,10 @@ export type Track = {
   size?: number;
   /** "aac" when YouTube's AAC audio was kept as is; otherwise the codec converted from. */
   codec?: string;
+  /** Listening range in seconds (DESIGN.md 구간 설정); absent = whole file. */
+  trim?: { start: number; end: number };
+  /** Loudness outline 0–100 for the trim editor (from the PC, or computed on the phone). */
+  peaks?: number[];
   added: number;
 };
 export type Part = { track: string; index: number; blob: Blob };
@@ -43,6 +47,13 @@ export async function setSetting(key: string, value: unknown) {
   await db.settings.put({ key, value });
 }
 export const trackSize = (t: Track) => t.audio?.size ?? t.size ?? 0;
+/** Seconds actually played: the trimmed range when set. */
+export const trackRange = (t: Track | undefined, fullDuration?: number) => {
+  const full = fullDuration || t?.duration || 0;
+  const start = t?.trim ? Math.max(0, t.trim.start) : 0;
+  const end = t?.trim ? Math.min(t.trim.end, full || t.trim.end) : full;
+  return { start, end, length: Math.max(0, end - start), trimmed: !!t?.trim };
+};
 /** Playable audio. Chunked tracks are joined lazily; the parts stay file-backed. */
 export async function trackAudio(t: Track): Promise<Blob> {
   if (t.audio) return t.audio;
