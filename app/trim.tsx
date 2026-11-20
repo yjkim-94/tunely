@@ -174,6 +174,42 @@ export function TrimSheet({
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
   };
+  // Thin playhead between the handles: drag to move the playback position.
+  const [scrub, setScrub] = useState<number | null>(null);
+  const head = scrub ?? (isCurrent ? position : range.start);
+  const dragHead = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    let last = toSeconds(e.clientX);
+    setScrub(last);
+    const move = (ev: PointerEvent) => {
+      last = toSeconds(ev.clientX);
+      setScrub(last);
+      if (isCurrent) onSeek(last); // live scrubbing while it plays
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      if (isCurrent) onSeek(last);
+      else onPlayFrom(last); // not playing yet: start this track from there
+      setScrub(null);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  };
+  const headKey = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const t = Math.min(
+      dur,
+      Math.max(0, head + (e.key === "ArrowLeft" ? -5 : 5)),
+    );
+    if (isCurrent) onSeek(t);
+    else onPlayFrom(t);
+  };
   const keyMove = (key: "start" | "end") => (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
@@ -225,12 +261,27 @@ export function TrimSheet({
               onPointerDown={(e) => isCurrent && onSeek(toSeconds(e.clientX))}
             >
               <canvas ref={canvas} aria-hidden="true" />
-              {isCurrent && (
+              {/* Playhead: line through the waveform, knob above it so it never sits under a range handle. */}
+              <span
+                className={
+                  "trim-playhead" + (scrub !== null ? " dragging" : "")
+                }
+                style={{ left: pct(head) }}
+              >
                 <span
-                  className="trim-playhead"
-                  style={{ left: pct(position) }}
+                  className="trim-knob"
+                  role="slider"
+                  tabIndex={0}
+                  aria-label="재생 위치"
+                  aria-valuemin={0}
+                  aria-valuemax={Math.round(dur)}
+                  aria-valuenow={Math.round(head)}
+                  aria-valuetext={fmt(head)}
+                  onPointerDown={dragHead}
+                  onKeyDown={headKey}
                 />
-              )}
+                <span className="trim-time">{fmt(head)}</span>
+              </span>
               {(["start", "end"] as const).map((key) => (
                 <span
                   key={key}
@@ -268,7 +319,7 @@ export function TrimSheet({
                 들을 구간 <b>{fmt(range.end - range.start)}</b>
               </span>
               <span>
-                지금 위치 <b>{isCurrent ? fmt(position) : "—"}</b>
+                지금 위치 <b>{isCurrent || scrub !== null ? fmt(head) : "—"}</b>
               </span>
             </div>
 
