@@ -730,7 +730,11 @@ export default function Home() {
       // Playlists come back right away; their songs appear as each one is received.
       for (const pl of restore.playlists)
         if (!(await db.playlists.get(pl.id)))
-          await db.playlists.add({ id: pl.id, name: pl.name, tracks: pl.tracks });
+          await db.playlists.add({
+            id: pl.id,
+            name: pl.name,
+            tracks: pl.tracks,
+          });
       await refresh();
       const picked = restore.tracks.filter((t) =>
         restorePicks.includes(t.video_id),
@@ -1779,8 +1783,8 @@ export default function Home() {
               <div className="settings-card">
                 <h3>보관함 백업</h3>
                 <p>
-                  곡 제목·아티스트와 재생목록만 서버에 백업해요. 음원은
-                  백업하지 않아요.
+                  곡 제목·아티스트와 재생목록만 서버에 백업해요. 음원은 백업하지
+                  않아요.
                 </p>
                 <small>
                   {syncInfo.pending
@@ -2545,9 +2549,16 @@ export default function Home() {
                       }}
                     />
                     <span>
-                      <b>{t.title}</b>
+                      {/* Rows recovered from server logs have no title yet; it is filled in when the song arrives. */}
+                      <b>{t.title || "제목 미확인 · 받으면 채워져요"}</b>
                       <small>
-                        {t.artist} · {fmt(t.duration)}
+                        {[
+                          t.artist,
+                          t.duration ? fmt(t.duration) : "",
+                          t.title ? "" : t.video_id,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </small>
                     </span>
                     <span className="pick-check">
