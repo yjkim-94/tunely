@@ -136,6 +136,33 @@ def code_update_available():
                 and dirty and not dirty.stdout.strip())
 
 
+def loudness_outline(audio, duration, report, n=600):
+    """~600 loudness values (0-100) for the phone's trim editor; a few KB, any length."""
+    if not duration:
+        return None
+    report('파형 계산', None, True)
+    k = max(1, -(-int(duration * 4000) // n))   # samples per value at 4 kHz mono
+    try:
+        r = subprocess.run([ffmpeg(), '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(audio), '-af',
+                            f'aresample=4000,aformat=channel_layouts=mono,asetnsamples=n={k}:p=0,'
+                            'astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-',
+                            '-f', 'null', '-'], capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    levels = []
+    for line in r.stdout.splitlines():
+        if 'RMS_level=' in line:
+            value = line.split('=', 1)[1].strip()
+            try:
+                levels.append(10 ** (float(value) / 20))
+            except ValueError:            # '-inf' = silence
+                levels.append(0.0)
+    if not levels:
+        return None
+    top = max(levels) or 1
+    return [round(v / top * 100) for v in levels[:1000]]
+
+
 def clean_tmp():
     """Remove leftovers from a previous run that was killed mid-download."""
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -225,6 +252,8 @@ def process(job, folder):
         raise RuntimeError('M4A 변환 실패: ' + (err or '')[-200:])
     report(stage, 100, True, f'{time.monotonic() - started:.0f}초')
 
+    peaks = loudness_outline(audio, info.get('duration') or job.get('duration') or 0, report)
+
     cover = folder / 'cover.jpg'
     try:
         thumb = info.get('thumbnail') or job.get('thumbnail')
@@ -249,6 +278,7 @@ def process(job, folder):
     call(f'jobs/{jid}/complete', {'title': info.get('title') or job['title'],
                                   'artist': info.get('channel') or info.get('uploader') or job['artist'] or '알 수 없음',
                                   'duration': int(info.get('duration') or job['duration'] or 0),
+                                  'peaks': peaks,
                                   # 'aac' = YouTube's AAC stream copied as is; otherwise the codec we converted from.
                                   'source_codec': 'aac' if copy else (info.get('acodec') or 'unknown').split('.')[0][:20]})
     return size, parts

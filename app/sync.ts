@@ -16,6 +16,8 @@ export type SyncBody = {
     artist: string;
     duration: number;
     codec: string | null;
+    trim_start: number | null;
+    trim_end: number | null;
   }[];
   delete_tracks: string[];
   playlists: { id: string; name: string; tracks: string[] }[];
@@ -136,6 +138,8 @@ export async function flushLibrary() {
           artist: t.artist.slice(0, 200),
           duration: Math.max(0, Math.min(86400, Math.round(t.duration || 0))),
           codec: t.codec?.slice(0, 20) ?? null,
+          trim_start: t.trim ? Math.round(t.trim.start * 10) / 10 : null,
+          trim_end: t.trim ? Math.round(t.trim.end * 10) / 10 : null,
         });
     }
     for (const id of pIds) {
