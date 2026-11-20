@@ -43,6 +43,7 @@ export function TrimSheet({
   onPlayFrom,
   onSeek,
   onSave,
+  onPeaksSaved,
   onClose,
 }: {
   track: Track;
@@ -53,6 +54,7 @@ export function TrimSheet({
   onPlayFrom: (seconds: number) => void;
   onSeek: (seconds: number) => void;
   onSave: (range: { start: number; end: number } | undefined) => void;
+  onPeaksSaved?: () => void;
   onClose: () => void;
 }) {
   const dur = fullDuration;
@@ -82,11 +84,13 @@ export function TrimSheet({
         setPeaks(p);
         setPeaksState("ready");
         await db.tracks.update(track.id, { peaks: p });
+        onPeaksSaved?.();
       })
       .catch(() => alive && setPeaksState("none"));
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track, dur]);
 
   useEffect(() => {

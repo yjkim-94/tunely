@@ -475,6 +475,32 @@ export default function Home() {
   useEffect(() => {
     if (audio.current) audio.current.playbackRate = speed;
   }, [speed]);
+  // iOS Safari rewrites a record's audio Blob whenever any field of the track is updated
+  // and drops the old file, so the playing Blob URL dies ("unsupported format").
+  // After updating the playing track, read it again and continue from the same spot.
+  const audioRetried = useRef(false);
+  // Last position while the element was actually loaded (an error resets it to 0 first).
+  const lastGood = useRef(0);
+  const reloadAudio = useCallback(
+    async (id: string, resume?: { at: number; play: boolean }) => {
+      const a = audio.current;
+      if (!a || current?.id !== id) return;
+      const fresh = await db.tracks.get(id);
+      if (!fresh) return;
+      const at = resume ? resume.at : a.currentTime;
+      const wasPlaying = resume ? resume.play : !a.paused;
+      const blob = await trackAudio(fresh);
+      const old = blobUrl.current;
+      blobUrl.current = URL.createObjectURL(blob);
+      seekRef.current = at;
+      playOnLoad.current = wasPlaying;
+      a.src = blobUrl.current;
+      a.playbackRate = savedRef.current.speed;
+      if (old) URL.revokeObjectURL(old);
+      setCurrent(fresh);
+    },
+    [current?.id],
+  );
   const persistPlayer = () => void setSetting("player", savedRef.current);
   const playTrack = useCallback(
     async (t: Track, ids?: string[]) => {
@@ -995,9 +1021,9 @@ export default function Home() {
         artist: edit.artist.trim() || "알 수 없음",
         art: edit.art,
       });
-      if (current?.id === edit.id) setCurrent(edit);
       setEdit(undefined);
       await refresh();
+      await reloadAudio(edit.id);
     } catch (e) {
       setNotice(errorText(e));
     }
@@ -2316,6 +2342,8 @@ export default function Home() {
         onTimeUpdate={() => {
           const a = audio.current;
           if (!a) return;
+          if (a.readyState < 1 || a.error) return;
+          lastGood.current = a.currentTime;
           setPosition(a.currentTime);
           savedRef.current = { ...savedRef.current, position: a.currentTime };
           if (Date.now() - lastSave.current > 4000) {
@@ -2343,10 +2371,23 @@ export default function Home() {
         }}
         onEnded={() => next(1, true)}
         onError={() => {
-          if (current)
-            setNotice(
-              "이 오디오를 재생할 수 없습니다. 파일 형식을 확인해 주세요.",
-            );
+          if (!current) return;
+          // A stale Blob URL (see reloadAudio) looks like a format error: retry once from the DB.
+          if (!audioRetried.current) {
+            audioRetried.current = true;
+            // The element has already lost its position; use the last saved one.
+            void reloadAudio(current.id, {
+              at: lastGood.current,
+              play: true,
+            });
+            return;
+          }
+          setNotice(
+            "이 오디오를 재생할 수 없습니다. 파일 형식을 확인해 주세요.",
+          );
+        }}
+        onCanPlay={() => {
+          audioRetried.current = false;
         }}
       />
       {current && (
@@ -3024,8 +3065,8 @@ export default function Home() {
                   }
                 : undefined;
               await db.tracks.update(trimFor.id, { trim });
-              if (current?.id === trimFor.id) setCurrent({ ...current, trim });
               await refresh();
+              await reloadAudio(trimFor.id);
               setNotice(
                 trim
                   ? `구간을 저장했어요 (${fmt(trim.start)}–${fmt(trim.end)}).`
@@ -3036,6 +3077,7 @@ export default function Home() {
               setNotice(errorText(e));
             }
           }}
+          onPeaksSaved={() => void reloadAudio(trimFor.id)}
           onClose={() => setTrimFor(undefined)}
         />
       )}
