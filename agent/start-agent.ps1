@@ -132,8 +132,22 @@ if (Test-Path (Join-Path $oldVenv 'Scripts\python.exe')) {
 if (-not (Test-Path (Join-Path $PSScriptRoot '.env'))) {
     Fail 'agent\.env 파일이 없습니다. agent\.env.example을 복사해 TUNELY_URL과 AGENT_TOKEN을 채우세요.'
 }
+# The agent exits with 75 after upgrading yt-dlp (restart it) or 76 when new code is on
+# GitHub (relaunch this script so it pulls first).
+$env:TUNELY_UV = $Uv
 try {
-    & $Py (Join-Path $PSScriptRoot 'tunely_agent.py')
+    while ($true) {
+        & $Py (Join-Path $PSScriptRoot 'tunely_agent.py')
+        $code = $LASTEXITCODE
+        if ($code -eq 75) { Say 'yt-dlp 새 버전으로 에이전트를 다시 시작합니다.'; continue }
+        if ($code -eq 76) {
+            Say '새 버전 코드를 받기 위해 다시 시작합니다.'
+            Remove-Item Env:TUNELY_UPDATED -ErrorAction SilentlyContinue
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath
+            exit $LASTEXITCODE
+        }
+        break
+    }
 } finally {
     Get-ChildItem -Force $Tmp -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }

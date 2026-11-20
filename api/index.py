@@ -317,6 +317,13 @@ async def agent_complete(request:Request,id:str,body:Complete,_=Depends(agent)):
     await notify({'title':'저장 준비 완료','body':f'{body.title} · Tunely를 열면 보관함에 담아요.','tag':id})
     return {'ok':True}
 
+@app.post('/api/agent/jobs/{id}/requeue')
+async def agent_requeue(request:Request,id:str,_=Depends(agent)):
+    # Used after the agent upgrades yt-dlp mid-run: try this song again with the new version.
+    await agent_job(id);await touch_agent(request)
+    await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'queued','progress':None,'stage':None})
+    return {'ok':True}
+
 @app.post('/api/agent/jobs/{id}/fail')
 async def agent_fail(request:Request,id:str,body:Fail,_=Depends(agent)):
     await agent_job(id);await touch_agent(request)
