@@ -508,17 +508,16 @@ main {
   font-size: var(--text-xs);
   color: var(--on-desk-soft);
 }
-.avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: var(--tab-yellow);
-  color: var(--ink);
-  border: var(--line);
-  box-shadow: var(--shadow-sm);
-  font-family: var(--font-title);
-  font-weight: var(--title-weight);
-  font-size: calc(18px * var(--title-scale));
+/* PC status dot: filled when online, hollow when off (not colour alone) */
+.connection .status-dot {
+  background: transparent;
+}
+.connection.online .status-dot {
+  background: var(--tab-mint);
+}
+.connection.online {
+  color: var(--on-desk);
+  font-weight: 600;
 }
 
 /* the page itself is one sheet of paper */
