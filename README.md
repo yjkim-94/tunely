@@ -56,23 +56,28 @@ Vercel에서 YouTube 다운로드를 시도하면 봇으로 판단되어 차단�
 
 ## Windows PC 에이전트 설정
 
-1. Python 3.12와 Deno를 설치합니다. yt-dlp는 YouTube 처리에 Deno를 씁니다.
-   ```bash
-   winget install Python.Python.3.12
-   ```
-   ```bash
-   winget install DenoLand.Deno
-   ```
-2. 한글·공백이 없는 경로에 저장소를 받습니다. 예: `D:\tunely`
+필요한 것은 Git과 인터넷 연결뿐입니다. Python·Deno·FFmpeg를 시스템에 설치하지 않고, 모두 저장소 폴더 안에만 받습니다.
+
+1. 한글·공백이 없는 경로에 저장소를 받습니다. 예: `D:\tunely`
    ```bash
    git clone https://github.com/yjkim-94/tunely.git
    ```
-3. `agent\.env.example`을 `agent\.env`로 복사하고 값을 채웁니다. `AGENT_TOKEN`은 Vercel 환경변수와 같은 값이며, 비밀번호처럼 다룹니다.
+2. `agent\.env.example`을 `agent\.env`로 복사하고 값을 채웁니다. `AGENT_TOKEN`은 Vercel 환경변수와 같은 값이며, 비밀번호처럼 다룹니다.
    ```
    TUNELY_URL=https://tunely-play.vercel.app
    AGENT_TOKEN=...
    ```
-4. `agent\run-agent.bat`을 실행합니다. 첫 실행에 `.venv`를 만들고 `agent\requirements.txt`를 설치하며, 실행할 때마다 yt-dlp를 최신으로 올립니다. FFmpeg는 `imageio-ffmpeg`로 함께 설치됩니다.
+3. `agent\run-agent.bat`을 실행합니다. 첫 실행은 설치 때문에 몇 분 걸립니다.
+
+`run-agent.bat`은 `agent\start-agent.ps1`을 실행하고, 이 스크립트가 매번 아래 순서로 진행합니다.
+
+1. **자동 업데이트**: `git pull`로 최신 코드를 받습니다. 폴더 안 코드를 직접 고친 내용이 있거나 git이 없으면 건너뜁니다.
+2. **uv**: PyPI의 공식 배포 파일을 받아 SHA-256을 확인한 뒤 `tools\uv\uv.exe`에 둡니다.
+3. **Python 3.12**: uv가 `tools\python`에 설치합니다. PATH와 Windows 레지스트리는 건드리지 않습니다.
+4. **패키지**: `tools\venv`에 yt-dlp, FFmpeg(`imageio-ffmpeg`), Deno(PyPI `deno`)를 설치합니다. `agent\requirements.txt`가 바뀔 때만 다시 설치하고, yt-dlp는 매번 최신으로 올립니다.
+5. **실행**: 곡마다 `tmp\` 안에 작업 폴더를 만들고 끝나면 지웁니다. 시작할 때와 종료할 때 `tmp\`를 비우므로, 강제 종료로 남은 파일도 다음 실행 때 정리됩니다. yt-dlp·Deno·uv 캐시는 `tools\cache\`에 둡니다.
+
+예전 방식으로 만든 저장소 루트의 `.venv`는 첫 실행 때 지웁니다. 에이전트를 지우려면 저장소 폴더를 통째로 삭제하면 됩니다.
 
 창이 떠 있는 동안 대기열을 처리하고, 터미널에 단계별 진행률을 한 줄로 갱신합니다.
 
@@ -86,14 +91,15 @@ Vercel에서 YouTube 다운로드를 시도하면 봇으로 판단되어 차단�
 
 **로그인할 때 자동 실행**: `Win + R` → `shell:startup`으로 연 폴더에 `run-agent.bat` 바로가기를 넣습니다. 바로가기 속성의 ‘실행’을 ‘최소화’로 바꾸면 작업 표시줄에만 떠 있습니다.
 
-**업데이트**: 에이전트 창을 닫고 `D:\tunely`에서 `git pull` 후 다시 실행합니다.
+**업데이트**: 시작할 때 자동으로 받습니다. 실행 중에 나온 새 버전은 에이전트를 다시 켜면 적용됩니다.
 
 | 증상 | 조치 |
 |---|---|
-| `Deno 없음` | 설치 후 PowerShell을 다시 열거나 재부팅 |
+| `Deno 없음` | ARM 기반 Windows는 PyPI Deno가 없어 생략됩니다. `agent\.env`에 `DENO_PATH`로 직접 지정 |
+| `자동 업데이트 건너뜀` | 폴더 안 코드를 고쳤다면 `git status`로 확인 후 되돌리기 |
 | `서버 연결 실패` 반복 | `agent\.env`의 `TUNELY_URL`과 인터넷 연결 확인 |
 | HTTP 401 | `AGENT_TOKEN` 값이나 앞뒤 공백 확인 |
-| `업로드 실패 (HTTP 413)` | 구버전 에이전트입니다. `git pull` 후 재실행 |
+| `업로드 실패 (HTTP 413)` | 구버전 에이전트입니다. 창을 닫고 다시 실행(자동 업데이트) |
 | `Sign in to confirm you're not a bot` | 집 IP도 YouTube가 제한한 경우로, 쿠키 사용 기능 추가가 필요합니다 |
 
 ## 배포 (Vercel + Supabase)
