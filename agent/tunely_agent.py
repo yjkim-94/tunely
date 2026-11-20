@@ -21,6 +21,11 @@ SERVER = os.getenv('TUNELY_URL', '').rstrip('/')
 TOKEN = os.getenv('AGENT_TOKEN', '')
 NAME = os.getenv('AGENT_NAME') or socket.gethostname()
 POLL = 5
+# YouTube changes often and yt-dlp follows quickly, so check while running too.
+UPDATE_EVERY = 6 * 3600     # idle check for new yt-dlp / agent code
+FORCED_UPDATE_GAP = 3600    # at most one extra check per hour after a download failure
+EXIT_RESTART = 75           # start-agent.ps1: restart the agent (new yt-dlp installed)
+EXIT_RELAUNCH = 76          # start-agent.ps1: relaunch itself (git pull, then start)
 # Supabase free plan caps each upload at 50MB; long mixes are sent in pieces.
 CHUNK = 40 * 1024 * 1024
 # Prefer YouTube's AAC stream (itag 140, ~128kbps) so FFmpeg only remuxes it in
@@ -85,6 +90,50 @@ def deno():
     if local.is_file():
         return str(local)
     return os.getenv('DENO_PATH') or shutil.which('deno')
+
+
+def _run(args, timeout=120):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                              env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'})
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def ytdlp_version():
+    r = _run([sys.executable, '-c', 'import importlib.metadata as m; print(m.version("yt-dlp"))'], 30)
+    return r.stdout.strip() if r and r.returncode == 0 else ''
+
+
+def update_ytdlp():
+    """Upgrade yt-dlp in this venv with the bundled uv. True if the version changed."""
+    uv = os.getenv('TUNELY_UV')
+    if not uv or not Path(uv).is_file():
+        return False
+    before = ytdlp_version()
+    r = _run([uv, 'pip', 'install', '--python', sys.executable, '--quiet', '--upgrade', 'yt-dlp', 'yt-dlp-ejs'], 600)
+    if not r or r.returncode:
+        log('yt-dlp 업데이트 확인 실패(인터넷 연결 확인). 지금 버전으로 계속합니다.')
+        return False
+    after = ytdlp_version()
+    if after and after != before:
+        log(f'yt-dlp {before} → {after} 업데이트했습니다. 에이전트를 다시 시작합니다.')
+        return True
+    return False
+
+
+def code_update_available():
+    """New agent code on GitHub and no local edits (the launcher then pulls it)."""
+    git = shutil.which('git')
+    if not git or not (ROOT / '.git').exists():
+        return False
+    fetched = _run([git, '-C', str(ROOT), 'fetch', '--quiet'], 120)
+    if not fetched or fetched.returncode:
+        return False
+    behind = _run([git, '-C', str(ROOT), 'rev-list', '--count', 'HEAD..@{u}'], 30)
+    dirty = _run([git, '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no'], 30)
+    return bool(behind and behind.stdout.strip().isdigit() and int(behind.stdout.strip()) > 0
+                and dirty and not dirty.stdout.strip())
 
 
 def clean_tmp():
@@ -215,6 +264,8 @@ def main():
     log(f'yt-dlp {yt_dlp.version.__version__} · Deno {"있음" if deno() else "없음(설치 권장)"} · FFmpeg {ffmpeg()}')
     log(f'임시 폴더 {TMP_ROOT}')
     idle = False
+    last_check = time.monotonic()      # the launcher just updated everything
+    last_forced = 0.0
     while True:
         try:
             job = call('claim').get('job')
@@ -226,6 +277,13 @@ def main():
             if not idle:
                 log('대기 중… (Ctrl+C로 종료)')
                 idle = True
+            if time.monotonic() - last_check > UPDATE_EVERY:
+                last_check = time.monotonic()
+                if code_update_available():
+                    log('새 버전 코드가 있어 받으러 다시 시작합니다.')
+                    sys.exit(EXIT_RELAUNCH)
+                if update_ytdlp():
+                    sys.exit(EXIT_RESTART)
             time.sleep(POLL)
             continue
         idle = False
@@ -240,6 +298,18 @@ def main():
             # Never store signed URLs (they carry upload tokens) in logs or the DB.
             msg = re.sub(r'https?://\S+', '[URL]', str(e).replace('\x1b', ''))[-400:] or '처리 실패'
             log('  실패:', msg)
+            # A download error is often YouTube changing something; a newer yt-dlp may fix it.
+            if isinstance(e, yt_dlp.utils.DownloadError) and time.monotonic() - last_forced > FORCED_UPDATE_GAP:
+                last_forced = time.monotonic()
+                log('  yt-dlp 새 버전을 확인합니다…')
+                if update_ytdlp():
+                    try:
+                        call(f'jobs/{job["id"]}/requeue')
+                        log('  이 곡은 대기열로 되돌려 새 버전으로 다시 시도합니다.')
+                    except Exception:
+                        pass
+                    shutil.rmtree(folder, ignore_errors=True)
+                    sys.exit(EXIT_RESTART)
             try:
                 call(f'jobs/{job["id"]}/fail', {'error': msg})
             except Exception:

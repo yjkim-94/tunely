@@ -179,6 +179,11 @@ class SecurityTests(unittest.TestCase):
    r=self.c.post(f'/api/agent/jobs/{JOB}/uploads',json={'parts':15,'size':600_000_000},headers=AGENT).json()
    self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/uploads',json={'parts':41,'size':1},headers=AGENT).status_code,422)
   self.assertEqual(len(r['audio']),15);self.assertIn('/audio.014?token=t',r['audio'][-1]);self.assertIn('/cover.jpg',r['cover'])
+ def test_agent_requeue(self):
+  fake=FakeSupabase(existing=[{'id':JOB}])
+  with patch('api.index.sb',fake):self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/requeue',headers=AGENT).status_code,200)
+  self.assertEqual([c for c in fake.calls if c[0]=='PATCH'][0][2]['json']['status'],'queued')
+  with patch('api.index.sb',FakeSupabase()):self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/requeue',headers=AGENT).status_code,409)
  def test_agent_progress_on_cancelled_job_conflicts(self):
   with patch('api.index.sb',FakeSupabase(existing=[])):
    self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/progress',json={'stage':'다운로드','percent':5},headers=AGENT).status_code,409)
