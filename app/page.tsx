@@ -58,6 +58,31 @@ type LibTrack = {
   codec?: string | null;
 };
 type LibPlaylist = { id: string; name: string; tracks: string[] };
+type PushState = "unsupported" | "off" | "on" | "denied" | "busy";
+const pushSupported = () =>
+  typeof window !== "undefined" &&
+  "serviceWorker" in navigator &&
+  "PushManager" in window &&
+  "Notification" in window;
+const b64ToBytes = (b64: string) => {
+  const s = atob(
+    (b64 + "=".repeat((4 - (b64.length % 4)) % 4))
+      .replace(/-/g, "+")
+      .replace(/_/g, "/"),
+  );
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+};
+// navigator.serviceWorker.ready never settles without a registered worker (e.g. dev).
+const swReady = () =>
+  Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error("앱을 홈 화면에서 다시 열어 주세요.")),
+        5000,
+      ),
+    ),
+  ]);
 
 type Result = Omit<Track, "audio" | "added"> & {
   views?: number | null;
@@ -244,7 +269,8 @@ export default function Home() {
       total: number;
     } | null>(null),
     [restorePicks, setRestorePicks] = useState<string[]>([]),
-    [restoreBusy, setRestoreBusy] = useState(false);
+    [restoreBusy, setRestoreBusy] = useState(false),
+    [pushState, setPushState] = useState<PushState>();
   // Titles/artists from the backup win over YouTube's when a track is restored.
   const serverMeta = useRef(new Map<string, LibTrack>());
   const [selected, setSelected] = useState<string[]>([]),
@@ -700,6 +726,63 @@ export default function Home() {
       document.removeEventListener("visibilitychange", retry);
     };
   }, [auth]);
+  useEffect(() => {
+    if (!auth) return;
+    if (!pushSupported()) return setPushState("unsupported");
+    if (Notification.permission === "denied") return setPushState("denied");
+    (async () => {
+      try {
+        const sub = await (await swReady()).pushManager.getSubscription();
+        if (sub && Notification.permission === "granted") {
+          setPushState("on");
+          // Re-register so the server still knows this phone after any cleanup.
+          await api("push/subscribe", sub.toJSON()).catch(() => {});
+        } else setPushState("off");
+      } catch {
+        setPushState("off");
+      }
+    })();
+  }, [auth]);
+  async function enablePush() {
+    setPushState("busy");
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushState(permission === "denied" ? "denied" : "off");
+        return;
+      }
+      const reg = await swReady();
+      const { key } = await (await api("push/key")).json();
+      const sub =
+        (await reg.pushManager.getSubscription()) ||
+        (await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: b64ToBytes(key),
+        }));
+      await api("push/subscribe", sub.toJSON());
+      setPushState("on");
+      setNotice("알림을 켰어요. PC가 곡을 준비하면 알려 드릴게요.");
+    } catch (e) {
+      setPushState("off");
+      setNotice(errorText(e));
+    }
+  }
+  async function disablePush() {
+    setPushState("busy");
+    try {
+      const sub = await (await swReady()).pushManager.getSubscription();
+      if (sub) {
+        await api("push/unsubscribe", { endpoint: sub.endpoint }).catch(
+          () => {},
+        );
+        await sub.unsubscribe();
+      }
+      setPushState("off");
+    } catch (e) {
+      setPushState("on");
+      setNotice(errorText(e));
+    }
+  }
   async function openRestore() {
     setRestoreBusy(true);
     try {
@@ -1807,6 +1890,55 @@ export default function Home() {
                     보관함 복구
                   </button>
                 </div>
+              </div>
+              <div className="settings-card">
+                <h3>알림</h3>
+                <p>PC가 곡을 준비하거나 저장에 실패하면 알림을 보내요.</p>
+                <small>
+                  {pushState === "unsupported"
+                    ? "홈 화면에 추가한 Tunely(iOS 16.4 이상)에서만 켤 수 있어요."
+                    : pushState === "denied"
+                      ? "알림이 차단되어 있어요. iPhone 설정 > 알림 > Tunely에서 허용해 주세요."
+                      : pushState === "on"
+                        ? "이 기기에서 알림을 받고 있어요."
+                        : "꺼져 있어요."}
+                </small>
+                {pushState !== "unsupported" && pushState !== "denied" && (
+                  <div className="setting-actions">
+                    {pushState === "on" ? (
+                      <>
+                        <button
+                          className="secondary"
+                          disabled={offline}
+                          onClick={() =>
+                            void api("push/test", {})
+                              .then(() => setNotice("테스트 알림을 보냈어요."))
+                              .catch((e) => setNotice(errorText(e)))
+                          }
+                        >
+                          테스트 알림
+                        </button>
+                        <button
+                          className="text-button"
+                          onClick={() => void disablePush()}
+                        >
+                          알림 끄기
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="secondary"
+                        disabled={pushState === "busy" || offline}
+                        onClick={() => void enablePush()}
+                      >
+                        {pushState === "busy" ? (
+                          <LoaderCircle className="spin" size={15} />
+                        ) : null}
+                        알림 켜기
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="settings-card">
                 <h3>iPhone에 설치하기</h3>

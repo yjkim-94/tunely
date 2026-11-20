@@ -4,8 +4,10 @@ from unittest.mock import patch
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 os.environ.update(APP_PASSWORD_HASH=PasswordHasher().hash('test-password-only'),SESSION_SECRET='x'*48,COOKIE_SECURE='false',APP_ORIGIN='http://testserver',
- SUPABASE_URL='https://example.supabase.co',SUPABASE_SECRET_KEY='k',AGENT_TOKEN='a'*40,CRON_SECRET='c'*32)
+ SUPABASE_URL='https://example.supabase.co',VAPID_PRIVATE_KEY='Q'*43,SUPABASE_SECRET_KEY='k',AGENT_TOKEN='a'*40,CRON_SECRET='c'*32)
 JOB='0b8c6c1e-1111-4222-8333-444455556666'
+import base64
+push_b64=lambda t:base64.urlsafe_b64decode(t+'='*(-len(t)%4))
 AGENT={'Authorization':'Bearer '+'a'*40}
 
 class FakeSupabase:
@@ -131,6 +133,34 @@ class SecurityTests(unittest.TestCase):
   with patch('api.index.sb',FakeSupabase()):
    self.assertEqual(self.c.post('/api/library/sync',json=big).status_code,200)
    self.assertEqual(self.c.post('/api/jobs',json={'url':'https://youtu.be/QfzmglQwSCk','title':'x'*9000}).status_code,413)
+ def test_push_subscribe_validates_endpoint(self):
+  self.sign_in();fake=FakeSupabase()
+  keys={'p256dh':'B'+'A'*86,'auth':'A'*22}
+  with patch('api.index.sb',fake):
+   self.assertEqual(len(push_b64(self.c.get('/api/push/key').json()['key'])),65)
+   self.assertEqual(self.c.post('/api/push/subscribe',json={'endpoint':'https://evil.test/x','keys':keys}).status_code,400)
+   self.assertEqual(self.c.post('/api/push/subscribe',json={'endpoint':'https://web.push.apple.com/abc','keys':keys}).status_code,200)
+  self.assertIn(('POST','/rest/v1/push_subscriptions'),[c[:2] for c in fake.calls])
+ def test_complete_sends_push_and_drops_expired(self):
+  from cryptography.hazmat.primitives.asymmetric import ec
+  from cryptography.hazmat.primitives import serialization
+  import base64
+  ua=ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(serialization.Encoding.X962,serialization.PublicFormat.UncompressedPoint)
+  b=lambda x:base64.urlsafe_b64encode(x).rstrip(b'=').decode()
+  subs=[{'endpoint':'https://web.push.apple.com/live','p256dh':b(ua),'auth':b(os.urandom(16))},{'endpoint':'https://web.push.apple.com/gone','p256dh':b(ua),'auth':b(os.urandom(16))}]
+  class Fake(FakeSupabase):
+   async def __call__(self,method,path,**kw):
+    if path=='/rest/v1/push_subscriptions' and method=='GET':self.calls.append((method,path,kw));return subs
+    return await super().__call__(method,path,**kw)
+  fake=Fake(existing=[{'id':JOB}]);posted=[]
+  class R:
+   def __init__(s,c):s.status_code=c;s.text=''
+  async def post(self,url,headers=None,content=None):
+   posted.append((url,headers));return R(410 if url.endswith('gone') else 201)
+  with patch('api.index.sb',fake),patch('httpx.AsyncClient.post',post):
+   self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/complete',json={'title':'곡','artist':'a','duration':1},headers=AGENT).status_code,200)
+  self.assertEqual(len(posted),2);self.assertTrue(posted[0][1]['Authorization'].startswith('vapid t='))
+  self.assertIn(('DELETE','/rest/v1/push_subscriptions'),[c[:2] for c in fake.calls])
  def test_agent_requires_token(self):
   with patch('api.index.sb',FakeSupabase()):
    self.assertEqual(self.c.post('/api/agent/claim').status_code,401)

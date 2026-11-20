@@ -1,4 +1,4 @@
-const CACHE = "tunely-v2";
+const CACHE = "tunely-v3";
 self.addEventListener("install", (e) =>
   e.waitUntil(
     caches
@@ -53,5 +53,33 @@ self.addEventListener("fetch", (e) => {
           return r;
         }),
     ),
+  );
+});
+
+// Web Push: "저장 준비 완료" etc. iOS requires every push to show a notification.
+self.addEventListener("push", (e) => {
+  let data = {};
+  try {
+    data = e.data ? e.data.json() : {};
+  } catch {}
+  e.waitUntil(
+    self.registration.showNotification(data.title || "Tunely", {
+      body: data.body || "",
+      tag: data.tag || undefined,
+      icon: "/icon-192.png",
+      badge: "/favicon-32.png",
+      data: { url: "/" },
+    }),
+  );
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((list) => {
+        const open = list.find((c) => new URL(c.url).origin === location.origin);
+        return open ? open.focus() : self.clients.openWindow("/");
+      }),
   );
 });
