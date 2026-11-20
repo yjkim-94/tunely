@@ -384,22 +384,11 @@ svg {
 }
 .sidebar nav .nav-active,
 .settings-link.nav-active {
-  color: var(--ink);
+  background: var(--accent);
+  color: var(--accent-ink);
   border: var(--line);
   box-shadow: var(--shadow-sm);
   transform: translateX(6px);
-}
-.sidebar nav button:nth-child(1).nav-active {
-  background: var(--tab-yellow);
-}
-.sidebar nav button:nth-child(2).nav-active {
-  background: var(--tab-sky);
-}
-.sidebar nav button:nth-child(3).nav-active {
-  background: var(--tab-pink);
-}
-.settings-link.nav-active {
-  background: var(--tab-mint);
 }
 .nav-count {
   margin-left: auto;
@@ -709,6 +698,10 @@ main {
   gap: var(--space-1);
   align-items: center;
 }
+.collection-banner h2,
+.collection-banner p {
+  word-break: keep-all;
+}
 .collection-banner h2 {
   font-family: var(--font-title);
   font-weight: var(--title-weight);
@@ -827,12 +820,13 @@ main {
   border: var(--line);
   border-radius: var(--radius-pill);
   padding: 0 var(--space-3);
-  min-height: 44px;
+  height: 44px;
 }
 .filter input {
   width: 140px;
   border: 0;
-  min-height: 40px;
+  height: 40px;
+  min-height: 0;
   padding: 0 var(--space-1);
   background: transparent;
 }
@@ -843,9 +837,49 @@ main {
   outline: 3px solid var(--ink);
   outline-offset: 2px;
 }
-.toolbar-controls select {
-  padding: 0 var(--space-3);
+/* native select with our own chevron in the accent colour (the system arrow is hard to see) */
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.select-wrap select {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 44px;
+  min-height: 0;
+  padding: 0 38px 0 var(--space-4);
   border-radius: var(--radius-pill);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -6px;
+  border-right: 2.5px solid var(--accent-text);
+  border-bottom: 2.5px solid var(--accent-text);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+.chip-button {
+  height: 44px;
+  padding: 0 var(--space-4);
+  border: var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.chip-button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
 }
 .table-head {
   display: grid;
@@ -1565,6 +1599,15 @@ progress::-moz-progress-bar {
   overscroll-behavior: contain;
   transition: transform var(--dur-sheet) var(--ease);
 }
+.grabber {
+  display: block;
+  width: 44px;
+  height: 5px;
+  margin: 0 auto var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--ink-soft);
+  opacity: 0.5;
+}
 .full-player > .cover {
   max-width: 300px;
   margin: var(--space-4) auto var(--space-6);
@@ -1635,8 +1678,8 @@ progress::-moz-progress-bar {
   font-size: var(--text-sm);
   color: var(--ink-soft);
 }
-.speed-control select {
-  padding: 0 var(--space-3);
+.speed-control .select-wrap select {
+  border-radius: var(--radius-sm);
 }
 .up-next {
   border-top: var(--line-dotted);
@@ -1755,10 +1798,17 @@ progress::-moz-progress-bar {
   font-size: var(--text-sm);
   z-index: 100;
 }
-.modal-backdrop {
+.modal-backdrop::before {
+  content: "";
   position: fixed;
   inset: 0;
   background: var(--backdrop);
+  opacity: var(--sheet-fade, 1);
+  z-index: -1;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1981,22 +2031,11 @@ progress::-moz-progress-bar {
     transition: transform var(--dur-state) var(--ease);
   }
   .mobile-nav button.active {
-    color: var(--ink);
+    background: var(--accent);
+    color: var(--accent-ink);
     border-color: var(--ink);
     box-shadow: var(--shadow-sm);
     transform: translateY(-2px);
-  }
-  .mobile-nav button:nth-child(1).active {
-    background: var(--tab-yellow);
-  }
-  .mobile-nav button:nth-child(2).active {
-    background: var(--tab-sky);
-  }
-  .mobile-nav button:nth-child(3).active {
-    background: var(--tab-pink);
-  }
-  .mobile-nav button:nth-child(4).active {
-    background: var(--tab-mint);
   }
   .mini-player {
     left: var(--gutter-l);
@@ -2059,25 +2098,31 @@ progress::-moz-progress-bar {
     flex-direction: column;
     gap: var(--space-3);
   }
+  /* phone: photos above, text gets the full width so lines don't break mid-phrase */
   .collection-banner {
     padding: var(--space-5);
     min-height: 0;
+    flex-direction: column-reverse;
+    align-items: stretch;
   }
   .banner-photos {
-    width: 120px;
-    height: 132px;
-    margin-right: -8px;
+    width: 150px;
+    height: 112px;
+    align-self: center;
   }
   .banner-photos .polaroid {
-    width: 84px;
-    padding: 6px 6px 16px;
+    width: 72px;
+    padding: 5px 5px 14px;
+  }
+  .banner-photos .polaroid:nth-child(1) {
+    top: 14px;
   }
   .banner-photos .polaroid:nth-child(2) {
-    left: 34px;
+    left: 64px;
   }
   .banner-photos .polaroid:nth-child(3) {
-    left: 18px;
-    top: 44px;
+    left: 36px;
+    top: 30px;
   }
   .library-toolbar {
     align-items: stretch;
@@ -2085,8 +2130,12 @@ progress::-moz-progress-bar {
   .toolbar-controls {
     width: 100%;
   }
+  /* phone: search gets its own row so the placeholder isn't cut; sort + 선택 below */
   .filter {
-    flex: 1;
+    flex: 1 1 100%;
+  }
+  .toolbar-controls .select-wrap {
+    margin-right: auto;
   }
   .filter input {
     width: 100%;

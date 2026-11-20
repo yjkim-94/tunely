@@ -1065,6 +1065,50 @@ export default function Home() {
   const pending = jobs.filter((j) =>
     ["queued", "processing", "ready"].includes(j.status),
   ).length;
+  // Swipe the full player down to close it (DESIGN.md §10). Only starts from the upper
+  // part of the sheet while it is scrolled to the top, so the seek bar and buttons work.
+  const sheetRef = useRef<HTMLElement>(null);
+  const drag = useRef<{ y: number; t: number; dy: number } | null>(null);
+  const onSheetTouchStart = (e: React.TouchEvent) => {
+    const el = sheetRef.current;
+    if (!el || e.touches.length !== 1) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("input, select, .seek, .full-controls, .skip-row"))
+      return;
+    const y = e.touches[0].clientY;
+    const top = el.getBoundingClientRect().top;
+    if (el.scrollTop > 0 || y - top > el.clientHeight * 0.55) return;
+    drag.current = { y, t: performance.now(), dy: 0 };
+    el.style.transition = "none";
+  };
+  const onSheetTouchMove = (e: React.TouchEvent) => {
+    const el = sheetRef.current;
+    if (!el || !drag.current) return;
+    const dy = Math.max(0, e.touches[0].clientY - drag.current.y);
+    drag.current.dy = dy;
+    el.style.transform = `translateY(${dy}px)`;
+    el.parentElement?.style.setProperty(
+      "--sheet-fade",
+      String(Math.max(0, 1 - dy / 400)),
+    );
+  };
+  const onSheetTouchEnd = () => {
+    const el = sheetRef.current;
+    const d = drag.current;
+    drag.current = null;
+    if (!el || !d) return;
+    el.style.transition = "";
+    const speed = d.dy / Math.max(1, performance.now() - d.t);
+    if (d.dy > 110 || (speed > 0.6 && d.dy > 30)) {
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      el.style.transform = "translateY(110%)";
+      el.parentElement?.style.setProperty("--sheet-fade", "0");
+      setTimeout(() => setExpanded(false), reduce ? 0 : 280);
+    } else {
+      el.style.transform = "";
+      el.parentElement?.style.setProperty("--sheet-fade", "1");
+    }
+  };
   const seekBy = (delta: number) => {
     const a = audio.current;
     if (!a) return;
@@ -1400,18 +1444,21 @@ export default function Home() {
                     />
                   </label>
                   {!active && (
-                    <select
-                      aria-label="정렬"
-                      value={sort}
-                      onChange={(e) => setSort(e.target.value)}
-                    >
-                      <option value="new">최근 추가순</option>
-                      <option value="old">오래된순</option>
-                      <option value="title">제목순</option>
-                    </select>
+                    <span className="select-wrap">
+                      <select
+                        aria-label="정렬"
+                        value={sort}
+                        onChange={(e) => setSort(e.target.value)}
+                      >
+                        <option value="new">최근 추가순</option>
+                        <option value="old">오래된순</option>
+                        <option value="title">제목순</option>
+                      </select>
+                    </span>
                   )}
                   <button
-                    className="text-button"
+                    className="chip-button"
+                    aria-pressed={selectionMode}
                     onClick={() => {
                       setSelectionMode(!selectionMode);
                       setSelected([]);
@@ -2373,11 +2420,17 @@ export default function Home() {
       {expanded && current && (
         <div className="modal-backdrop">
           <section
+            ref={sheetRef}
             className="full-player"
+            onTouchStart={onSheetTouchStart}
+            onTouchMove={onSheetTouchMove}
+            onTouchEnd={onSheetTouchEnd}
+            onTouchCancel={onSheetTouchEnd}
             role="dialog"
             aria-modal="true"
             aria-label="오디오 플레이어"
           >
+            <span className="grabber" aria-hidden="true" />
             <div className="modal-heading">
               <button
                 className="icon"
@@ -2494,17 +2547,19 @@ export default function Home() {
             </div>
             <div className="speed-control">
               <span>재생 속도</span>
-              <select
-                aria-label="재생 속도"
-                value={speed}
-                onChange={(e) => setSpeed(Number(e.target.value))}
-              >
-                {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((s) => (
-                  <option value={s} key={s}>
-                    {s}×
-                  </option>
-                ))}
-              </select>
+              <span className="select-wrap">
+                <select
+                  aria-label="재생 속도"
+                  value={speed}
+                  onChange={(e) => setSpeed(Number(e.target.value))}
+                >
+                  {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((s) => (
+                    <option value={s} key={s}>
+                      {s}×
+                    </option>
+                  ))}
+                </select>
+              </span>
             </div>
             <button
               className="secondary wide"
