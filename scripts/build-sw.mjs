@@ -12,7 +12,7 @@ const assets = walk(root).map(f => f.replaceAll("\\", "/"))
   .filter(
     (f) =>
       f.includes("/_next/static/") ||
-      /\/(icon-\d+\.png|manifest\.webmanifest)$/.test(f),
+      /\/(icon-[\w-]+\.png|apple-touch-icon\.png|favicon[\w-]*\.(png|svg)|manifest\.webmanifest)$/.test(f),
   )
   .map((f) => "/" + f.slice(root.length + 1));
 const source = fs

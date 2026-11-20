@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 512 512"><defs>
+  <filter id="w" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7"/><feDisplacementMap in="SourceGraphic" scale="5"/></filter>
+  <pattern id="h" width="18" height="18" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="18" height="18" fill="#366348"/><line x1="0" y1="0" x2="0" y2="18" stroke="#4f7f60" stroke-width="7"/></pattern>
+</defs>
+    <rect x="40" y="40" width="432" height="432" rx="72" fill="#fbf6ea" stroke="#3a2a1e" stroke-width="36"/>
+    <g transform="translate(-18 6) scale(1.08) translate(-19 -21)">
+      <path d="M276 150 L276 330" stroke="#3a2a1e" stroke-width="34" stroke-linecap="round"/>
+      <path d="M276 150 C 316 170 344 190 336 246 C 330 220 306 208 280 204" fill="#366348" stroke="#3a2a1e" stroke-width="22" stroke-linejoin="round" stroke-linecap="round"/>
+      <ellipse cx="236" cy="334" rx="54" ry="42" transform="rotate(-22 236 334)" fill="#366348" stroke="#3a2a1e" stroke-width="26"/>
+    </g></svg>
