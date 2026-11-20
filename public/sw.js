@@ -1,4 +1,5 @@
-const CACHE = "tunely-v3";
+const CACHE = "tunely-v4";
+const FONT_CACHE = "tunely-fonts-v1";
 self.addEventListener("install", (e) =>
   e.waitUntil(
     caches
@@ -14,13 +15,34 @@ self.addEventListener("activate", (e) =>
       .keys()
       .then((keys) =>
         Promise.all(
-          keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
+          keys.filter((k) => k !== CACHE && k !== FONT_CACHE).map((k) => caches.delete(k)),
         ),
       ),
   ),
 );
 self.addEventListener("fetch", (e) => {
   const u = new URL(e.request.url);
+  // Title/body fonts (Google Fonts, Pretendard on jsDelivr): cache-first so they work offline.
+  if (
+    e.request.method === "GET" &&
+    (u.hostname === "fonts.googleapis.com" ||
+      u.hostname === "fonts.gstatic.com" ||
+      (u.hostname === "cdn.jsdelivr.net" && u.pathname.startsWith("/npm/pretendard@")))
+  ) {
+    e.respondWith(
+      caches.open(FONT_CACHE).then((c) =>
+        c.match(e.request).then(
+          (hit) =>
+            hit ||
+            fetch(e.request).then((r) => {
+              if (r.ok || r.type === "opaque") c.put(e.request, r.clone());
+              return r;
+            }),
+        ),
+      ),
+    );
+    return;
+  }
   if (
     u.origin !== location.origin ||
     u.pathname.startsWith("/api/") ||

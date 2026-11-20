@@ -45,6 +45,8 @@ Tunely의 모든 화면은 이 문서를 따릅니다. 사람이든 에이전트
 | `--on-desk-soft` | `#75614e` | `#b8a98f` | 책상 위 보조 글자 |
 | `--shadow` | `#3a2a1e` | `#000000` | 오프셋 그림자 색 |
 | `--tape` | `rgba(124,170,214,.55)` | 같음 | 마스킹 테이프 |
+| `--polaroid` | `#fffdf7` | `#f4ecdb` | 폴라로이드 프레임(커버) |
+| `--backdrop` | `rgba(58,42,30,.45)` | `rgba(0,0,0,.6)` | 대화상자 뒤 배경막(블러 없음) |
 | `--lamp` | 없음 | `radial-gradient(120% 70% at 50% 30%, rgba(255,214,150,.18), transparent 70%)` | 밤의 노트 조명 |
 
 ### 3.2 인덱스 탭·스티커 색 (고정, 꾸미기와 무관)
@@ -284,6 +286,7 @@ Tunely의 모든 화면은 이 문서를 따릅니다. 사람이든 에이전트
 
 ## 13. 꾸미기 설정 구현 규칙
 
+- 구현 위치: 토큰 `app/globals.css`, 설정 저장·적용 `app/look.ts`(첫 화면 전 적용은 `app/look-config.ts`의 인라인 스크립트), 아이콘 `app/icons.tsx`.
 - 루트 요소 속성으로 상태를 표현합니다: `data-theme="auto|day|night"`, `data-accent="forest|tomato|cobalt|roast"`, `data-title-font="gaegu|nanum-pen|jua|hi-melody|poor-story"`, `data-icons="hand|lucide"`.
 - 토큰 값은 `app/globals.css`의 `:root`와 위 속성 선택자에서만 정의합니다. 컴포넌트 CSS는 토큰만 참조합니다.
 - 아이콘은 `<Icon name="play" />` 같은 공용 컴포넌트 하나로 그리고, 세트 전환은 그 컴포넌트 안에서만 처리합니다.

@@ -29,7 +29,17 @@ import {
   MoreHorizontal,
   RotateCcw,
   RotateCw,
-} from "lucide-react";
+} from "./icons";
+import {
+  ACCENTS,
+  FONTS,
+  ICON_SETS,
+  THEMES,
+  applyLook,
+  getLook,
+  setLook,
+  useLook,
+} from "./look";
 import {
   db,
   removeTracks,
@@ -271,6 +281,29 @@ export default function Home() {
     [restorePicks, setRestorePicks] = useState<string[]>([]),
     [restoreBusy, setRestoreBusy] = useState(false),
     [pushState, setPushState] = useState<PushState>();
+  const look = useLook();
+  useEffect(() => {
+    // Re-apply once on mount so the status-bar colour matches (the inline script ran earlier).
+    applyLook(getLook());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // Font previews in 꾸미기: Google Fonts only sends the glyphs that are used.
+    if (tab !== "settings" || document.getElementById("font-previews")) return;
+    const link = document.createElement("link");
+    link.id = "font-previews";
+    link.rel = "stylesheet";
+    link.href =
+      "https://fonts.googleapis.com/css2?" +
+      FONTS.map((f) => `family=${f[2].replace(/ /g, "+")}:wght@${f[3]}`).join(
+        "&",
+      ) +
+      "&display=swap&text=" +
+      encodeURIComponent(
+        "나의 라이브러리GaeguNanumPenScriptJuaHiMelodyPoorStory",
+      );
+    document.head.appendChild(link);
+  }, [tab]);
   // Titles/artists from the backup win over YouTube's when a track is restored.
   const serverMeta = useRef(new Map<string, LibTrack>());
   const [selected, setSelected] = useState<string[]>([]),
@@ -1340,16 +1373,16 @@ export default function Home() {
                     <Play size={14} fill="currentColor" /> 전체 재생
                   </button>
                 </div>
-                <div className="record-art" aria-hidden="true">
-                  <div className="record">
-                    <div className="record-label">
-                      <Music2 size={27} />
-                      <small>TUNELY / 01</small>
-                    </div>
-                  </div>
-                  <span className="record-caption">SOUNDS LIKE YOU.</span>
+                <div className="banner-photos" aria-hidden="true">
+                  {(visible.length ? visible.slice(0, 3) : [undefined]).map(
+                    (t, i) => (
+                      <div className="polaroid" key={t?.id ?? i}>
+                        {i === 0 && <span className="tape" />}
+                        <Cover track={t} />
+                      </div>
+                    ),
+                  )}
                 </div>
-                <span className="banner-index">01 — YOUR COLLECTION</span>
               </div>
               <div className="library-toolbar">
                 <h3>
@@ -1807,6 +1840,75 @@ export default function Home() {
                 </div>
               </div>
               <div className="settings-card">
+                <h3>꾸미기</h3>
+                <p>이 기기에만 저장돼요. 바로 바뀝니다.</p>
+                <div className="look-group" role="group" aria-label="화면">
+                  <b>화면</b>
+                  <div className="look-options">
+                    {THEMES.map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={look.theme === id}
+                        onClick={() => setLook({ theme: id })}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="look-group" role="group" aria-label="포인트 색">
+                  <b>포인트 색</b>
+                  <div className="look-options">
+                    {ACCENTS.map(([id, label, hex]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={look.accent === id}
+                        onClick={() => setLook({ accent: id })}
+                      >
+                        <span className="swatch" style={{ background: hex }} />
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="look-group" role="group" aria-label="제목 글꼴">
+                  <b>제목 글꼴</b>
+                  <div className="look-options">
+                    {FONTS.map(([id, label, family, weight]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={look.font === id}
+                        onClick={() => setLook({ font: id })}
+                        style={{
+                          fontFamily: `"${family}", var(--font-body)`,
+                          fontWeight: weight,
+                        }}
+                      >
+                        <span className="font-sample">{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="look-group" role="group" aria-label="아이콘">
+                  <b>아이콘</b>
+                  <div className="look-options">
+                    {ICON_SETS.map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={look.icons === id}
+                        onClick={() => setLook({ icons: id })}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="settings-card">
                 <HardDrive size={22} />
                 <h3>기기 저장 공간</h3>
                 <p>
@@ -2151,9 +2253,11 @@ export default function Home() {
               <button
                 className={"icon optional " + (shuffle ? "active" : "")}
                 aria-label="셔플"
+                aria-pressed={shuffle}
                 onClick={() => setShuffle(!shuffle)}
               >
-                <Shuffle size={17} />
+                <Shuffle size={22} />
+                {shuffle && <span className="stamp">ON</span>}
               </button>
               <button
                 className="icon"
@@ -2185,6 +2289,7 @@ export default function Home() {
                   "icon optional " + (repeat !== "off" ? "active" : "")
                 }
                 aria-label="반복"
+                aria-pressed={repeat !== "off"}
                 onClick={() =>
                   setRepeat(
                     repeat === "off" ? "all" : repeat === "all" ? "one" : "off",
@@ -2192,9 +2297,14 @@ export default function Home() {
                 }
               >
                 {repeat === "one" ? (
-                  <Repeat1 size={17} />
+                  <Repeat1 size={22} />
                 ) : (
-                  <Repeat size={17} />
+                  <Repeat size={22} />
+                )}
+                {repeat !== "off" && (
+                  <span className="stamp">
+                    {repeat === "one" ? "1곡" : "ON"}
+                  </span>
                 )}
               </button>
             </div>
@@ -2202,6 +2312,11 @@ export default function Home() {
               <span>{fmt(position)}</span>
               <input
                 aria-label="재생 위치"
+                style={
+                  {
+                    "--pct": `${duration ? Math.min(100, (position / duration) * 100) : 0}%`,
+                  } as React.CSSProperties
+                }
                 type="range"
                 min="0"
                 max={duration || 1}
@@ -2287,6 +2402,11 @@ export default function Home() {
               <span>{fmt(position)}</span>
               <input
                 aria-label="전체 플레이어 재생 위치"
+                style={
+                  {
+                    "--pct": `${duration ? Math.min(100, (position / duration) * 100) : 0}%`,
+                  } as React.CSSProperties
+                }
                 type="range"
                 max={duration || 1}
                 value={Math.min(position, duration || 0)}
@@ -2319,9 +2439,11 @@ export default function Home() {
               <button
                 className={"icon " + (shuffle ? "active" : "")}
                 aria-label="셔플 전환"
+                aria-pressed={shuffle}
                 onClick={() => setShuffle(!shuffle)}
               >
-                <Shuffle />
+                <Shuffle size={26} />
+                {shuffle && <span className="stamp">ON</span>}
               </button>
               <button
                 className="icon"
@@ -2351,13 +2473,23 @@ export default function Home() {
               <button
                 className={"icon " + (repeat !== "off" ? "active" : "")}
                 aria-label="반복 전환"
+                aria-pressed={repeat !== "off"}
                 onClick={() =>
                   setRepeat(
                     repeat === "off" ? "all" : repeat === "all" ? "one" : "off",
                   )
                 }
               >
-                {repeat === "one" ? <Repeat1 /> : <Repeat />}
+                {repeat === "one" ? (
+                  <Repeat1 size={26} />
+                ) : (
+                  <Repeat size={26} />
+                )}
+                {repeat !== "off" && (
+                  <span className="stamp">
+                    {repeat === "one" ? "1곡" : "ON"}
+                  </span>
+                )}
               </button>
             </div>
             <div className="speed-control">

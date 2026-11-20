@@ -3,12 +3,13 @@
 iPhone 홈 화면에 설치해 쓰는 개인용 음악 보관함 PWA입니다. 앱에서 YouTube를 검색해 저장을 누르면 집 Windows PC가 음원을 받아 M4A로 만들고, iPhone이 그 파일을 받아 기기 안(IndexedDB)에 보관합니다. 저장한 음악은 네트워크 없이도 재생됩니다.
 
 <p align="center">
-  <img src="docs/screenshots/library.png" width="200" alt="보관함 화면: 저장한 곡 목록과 AAC 원본 배지">
-  <img src="docs/screenshots/search.png" width="200" alt="음악 찾기 화면: 정렬 칩과 조회수가 표시된 검색 결과">
-  <img src="docs/screenshots/queue.png" width="200" alt="PC 저장 대기열: 다운로드 진행률과 PC 연결 상태">
-  <img src="docs/screenshots/playlist.png" width="200" alt="재생목록에 보관함 곡을 골라 담는 화면">
+  <img src="docs/screenshots/library.png" width="160" alt="보관함: 종이 노트 위 곡 목록과 폴라로이드 배너">
+  <img src="docs/screenshots/search.png" width="160" alt="음악 찾기: 정렬 칩과 조회수가 표시된 검색 결과">
+  <img src="docs/screenshots/queue.png" width="160" alt="PC 저장 대기열: 다운로드 진행률과 PC 연결 상태">
+  <img src="docs/screenshots/player.png" width="160" alt="밤의 노트 재생 화면: 폴라로이드 커버와 셔플·반복 ON 스탬프">
+  <img src="docs/screenshots/customize.png" width="160" alt="설정의 꾸미기: 화면, 포인트 색, 제목 글꼴, 아이콘 선택">
 </p>
-<p align="center"><sub>보관함 · 음악 찾기 · PC 저장 대기열 · 재생목록 곡 고르기 (예시 데이터)</sub></p>
+<p align="center"><sub>보관함 · 음악 찾기 · PC 저장 대기열 · 재생 화면(밤의 노트) · 꾸미기 (예시 데이터)</sub></p>
 
 ## 주요 기능
 
@@ -18,6 +19,7 @@ iPhone 홈 화면에 설치해 쓰는 개인용 음악 보관함 PWA입니다. �
 - **긴 음원**: 10시간짜리 플레이리스트처럼 큰 파일은 40MB 조각으로 나눠 보내고, iPhone이 조각별로 저장했다가 재생할 때 합칩니다.
 - **오프라인 재생**: 셔플, 한 곡/전체 반복, 0.5–2배속, 큰 재생 화면의 10초 앞·뒤 이동, 잠금 화면의 이전곡·다음곡 버튼(Media Session)을 지원하고, 다시 열면 재생 위치와 대기열을 복원합니다.
 - **재생목록**: 보관함에 저장된 곡 중에서 골라 담고, 순서를 바꿉니다.
+- **꾸미기**: 손그림 종이 노트 디자인([DESIGN.md](DESIGN.md)). 설정에서 화면(자동·낮의 노트·밤의 노트), 포인트 색 4가지, 손글씨 제목 글꼴 5가지, 아이콘(손그림·깔끔한 선)을 고를 수 있고, 기기마다 저장됩니다.
 - **서버에 음원을 남기지 않음**: iPhone이 받는 즉시 서버의 음원 파일과 작업 기록을 지웁니다. 받지 않은 요청은 3일 뒤 정리합니다.
 - **푸시 알림**: PC가 곡을 준비하거나 저장에 실패하면 iPhone에 알림을 보냅니다(홈 화면에 추가한 앱, iOS 16.4 이상). 알림을 누르면 앱이 열리고 곡을 받습니다. 설정에서 켜고 끄며 테스트 알림을 보낼 수 있습니다.
 - **보관함 백업·복구**: 곡 제목·아티스트·길이와 재생목록(이름·순서)만 텍스트로 서버에 백업합니다. 앱에서 고치거나 지운 내용은 자동으로 반영되고, 오프라인 변경은 다음 연결 때 보냅니다. 앱 데이터가 지워지면 설정의 ‘보관함 복구’에서 없는 곡을 골라 PC에 다시 받게 하고, 재생목록과 고친 제목도 되살립니다.
