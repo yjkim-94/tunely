@@ -1345,23 +1345,26 @@ export default function Home() {
                   : "설정"}
           </span>
           <div className="topbar-right">
+            {/* PC agent status; when this phone is offline the PC status is unknown. */}
             {offline ? (
               <span className="connection">
-                <WifiOff size={13} /> 오프라인
+                <WifiOff size={14} /> 이 기기 오프라인
               </span>
             ) : (
-              <span className="connection">
+              <span
+                className={
+                  "connection " +
+                  (agentOnline ? "online" : agentOnline === false ? "off" : "")
+                }
+              >
                 <span className="status-dot" />
-                개인 보관함
+                {agentOnline === undefined
+                  ? "PC 확인 중"
+                  : agentOnline
+                    ? "PC 온라인"
+                    : "PC 오프라인"}
               </span>
             )}
-            <button
-              className="avatar"
-              aria-label="설정 열기"
-              onClick={() => setTab("settings")}
-            >
-              Y
-            </button>
           </div>
         </header>
         <div className="content">
