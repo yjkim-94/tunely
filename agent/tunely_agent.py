@@ -11,7 +11,12 @@ import requests, yt_dlp
 from dotenv import load_dotenv
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 load_dotenv(HERE / '.env')
+# Everything the agent writes stays inside the repository folder (start-agent.ps1
+# sets these); deleting the folder removes all of it.
+TMP_ROOT = Path(os.getenv('TUNELY_TMP') or ROOT / 'tmp')
+CACHE_ROOT = Path(os.getenv('TUNELY_CACHE') or ROOT / 'tools' / 'cache')
 SERVER = os.getenv('TUNELY_URL', '').rstrip('/')
 TOKEN = os.getenv('AGENT_TOKEN', '')
 NAME = os.getenv('AGENT_NAME') or socket.gethostname()
@@ -75,7 +80,24 @@ def ffmpeg():
 
 
 def deno():
+    # Prefer the Deno installed into this agent's own virtualenv (PyPI "deno").
+    local = Path(sys.executable).with_name('deno.exe' if os.name == 'nt' else 'deno')
+    if local.is_file():
+        return str(local)
     return os.getenv('DENO_PATH') or shutil.which('deno')
+
+
+def clean_tmp():
+    """Remove leftovers from a previous run that was killed mid-download."""
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    for child in TMP_ROOT.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                pass
 
 
 def upload(url, data, kind):
@@ -119,7 +141,8 @@ def process(job, folder):
     report('다운로드', None, True)
     opts = {'quiet': True, 'no_warnings': True, 'noplaylist': True, 'socket_timeout': 20, 'retries': 3,
             'fragment_retries': 3, 'format': FORMAT, 'outtmpl': str(folder / 'source.%(ext)s'),
-            'progress_hooks': [hook], 'remote_components': ['ejs:github']}
+            'progress_hooks': [hook], 'remote_components': ['ejs:github'],
+            'cachedir': str(CACHE_ROOT / 'yt-dlp')}
     if deno():
         opts['js_runtimes'] = {'deno': {'path': deno()}}
     with yt_dlp.YoutubeDL(opts) as y:
@@ -188,7 +211,9 @@ def main():
     if len(TOKEN) < 32:
         sys.exit('agent/.env의 AGENT_TOKEN을 설정하세요.')
     log(f'Tunely 에이전트 시작 · {NAME} · {SERVER}')
+    clean_tmp()
     log(f'yt-dlp {yt_dlp.version.__version__} · Deno {"있음" if deno() else "없음(설치 권장)"} · FFmpeg {ffmpeg()}')
+    log(f'임시 폴더 {TMP_ROOT}')
     idle = False
     while True:
         try:
@@ -205,7 +230,7 @@ def main():
             continue
         idle = False
         log(f'처리 시작: {job["title"]} ({job["url"]})')
-        folder = Path(tempfile.mkdtemp(prefix='tunely-'))
+        folder = Path(tempfile.mkdtemp(prefix='tunely-', dir=TMP_ROOT))
         try:
             size, parts = process(job, folder)
             log(f'  완료 · {size / 1024 / 1024:.1f} MB · {parts}개 조각 업로드')
@@ -227,4 +252,5 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
+        clean_tmp()
         log('종료합니다.')
