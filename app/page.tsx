@@ -24,10 +24,11 @@ import {
   WifiOff,
   HardDrive,
   LogOut,
-  Upload,
   Link as LinkIcon,
   LoaderCircle,
   MoreHorizontal,
+  RotateCcw,
+  RotateCw,
 } from "lucide-react";
 import {
   db,
@@ -212,6 +213,9 @@ export default function Home() {
     [searched, setSearched] = useState(false),
     [searching, setSearching] = useState(false),
     [searchSort, setSearchSort] = useState<SearchSort>("relevance"),
+    [searchLimit, setSearchLimit] = useState(20),
+    [lastQuery, setLastQuery] = useState(""),
+    [loadingMore, setLoadingMore] = useState(false),
     [picked, setPicked] = useState<string[]>([]),
     [jobs, setJobs] = useState<Job[]>([]),
     [agentOnline, setAgentOnline] = useState<boolean>();
@@ -245,7 +249,6 @@ export default function Home() {
     receivingRef = useRef(new Set<string>()),
     savedRef = useRef<Saved>(emptySaved),
     seekRef = useRef<number | null>(null),
-    fileInput = useRef<HTMLInputElement>(null),
     lastSave = useRef(0);
   const refresh = useCallback(async () => {
     setTracks(await db.tracks.toArray());
@@ -462,7 +465,7 @@ export default function Home() {
       album: "Tunely",
       artwork: artworkURL ? [{ src: artworkURL }] : [],
     });
-    const handlers: Record<string, MediaSessionActionHandler> = {
+    const handlers: Record<string, MediaSessionActionHandler | null> = {
       play: () => {
         void audio.current?.play().catch(() => {});
       },
@@ -473,20 +476,10 @@ export default function Home() {
         if (audio.current && d.seekTime !== undefined)
           audio.current.currentTime = d.seekTime;
       },
-      seekbackward: (d) => {
-        if (audio.current)
-          audio.current.currentTime = Math.max(
-            0,
-            audio.current.currentTime - (d.seekOffset || 10),
-          );
-      },
-      seekforward: (d) => {
-        if (audio.current)
-          audio.current.currentTime = Math.min(
-            audio.current.duration,
-            audio.current.currentTime + (d.seekOffset || 10),
-          );
-      },
+      // iOS shows either ±10s or previous/next on the lock screen, never both.
+      // Clearing the seek actions makes it show previous/next track buttons.
+      seekbackward: null,
+      seekforward: null,
     };
     for (const [action, handler] of Object.entries(handlers)) {
       try {
@@ -527,18 +520,29 @@ export default function Home() {
       setLoginBusy(false);
     }
   }
-  async function search(e?: React.FormEvent, sortBy = searchSort) {
+  async function search(
+    e?: React.FormEvent,
+    sortBy = searchSort,
+    limit = 20,
+    text = query.trim(),
+  ) {
     e?.preventDefault();
-    if (!query.trim()) return;
+    if (!text) return;
+    const more = limit > 20;
     searchAbort.current?.abort();
     const c = new AbortController();
     searchAbort.current = c;
-    setSearching(true);
-    setSearched(true);
-    setPicked([]);
+    if (more) setLoadingMore(true);
+    else {
+      setSearching(true);
+      setSearched(true);
+      setPicked([]);
+      setSearchLimit(20);
+    }
     try {
-      if (/^https?:/.test(query.trim())) {
-        const v = canonicalClient(query.trim());
+      if (/^https?:/.test(text)) {
+        const v = canonicalClient(text);
+        setLastQuery("");
         setResults([
           {
             ...v,
@@ -549,19 +553,26 @@ export default function Home() {
         ]);
         return;
       }
+      // yt-dlp can't continue a search, so "more" asks again for 40 or 60 results.
       const r = await api(
         "search",
-        { query: query.trim(), sort: sortBy },
+        { query: text, sort: sortBy, limit },
         c.signal,
       );
-      setResults(await r.json());
+      const items: Result[] = await r.json();
+      setResults(items);
+      setSearchLimit(limit);
+      setLastQuery(text);
     } catch (e) {
       if (!c.signal.aborted) {
-        setResults([]);
+        if (!more) setResults([]);
         setNotice(errorText(e));
       }
     } finally {
-      if (!c.signal.aborted) setSearching(false);
+      if (!c.signal.aborted) {
+        setSearching(false);
+        setLoadingMore(false);
+      }
     }
   }
   const receive = useCallback(
@@ -756,31 +767,6 @@ export default function Home() {
       setNotice(errorText(e));
     }
   }
-  async function importFiles(files: FileList | null) {
-    if (!files) return;
-    try {
-      for (const f of Array.from(files)) {
-        if (
-          !f.type.startsWith("audio/") &&
-          !/\.(m4a|mp3|wav|aac|ogg|flac)$/i.test(f.name)
-        )
-          continue;
-        await db.tracks.add({
-          id: "local-" + crypto.randomUUID(),
-          title: f.name.replace(/\.[^.]+$/, ""),
-          artist: "내 오디오",
-          duration: 0,
-          audio: f,
-          added: Date.now(),
-        });
-      }
-      await refresh();
-      setNotice("오디오 파일을 보관했습니다.");
-    } catch (e) {
-      setNotice(errorText(e));
-    }
-    if (fileInput.current) fileInput.current.value = "";
-  }
   async function saveEdit() {
     if (!edit) return;
     try {
@@ -858,6 +844,15 @@ export default function Home() {
   const pending = jobs.filter((j) =>
     ["queued", "processing", "ready"].includes(j.status),
   ).length;
+  const seekBy = (delta: number) => {
+    const a = audio.current;
+    if (!a) return;
+    a.currentTime = Math.min(
+      Math.max(0, a.currentTime + delta),
+      Number.isFinite(a.duration) ? a.duration : a.currentTime + delta,
+    );
+    setPosition(a.currentTime);
+  };
   const togglePlay = () => {
     if (playing) audio.current?.pause();
     else
@@ -1282,7 +1277,7 @@ export default function Home() {
                         ? tracks.length
                           ? "보관함에 저장된 곡 중에서 골라 담아 보세요."
                           : "보관함이 비어 있어요. 먼저 음악 찾기에서 곡을 저장해 주세요."
-                        : "음악을 찾거나, 가지고 있는 오디오 파일을 추가해 보세요."}
+                        : "음악 찾기에서 듣고 싶은 곡을 저장해 보세요."}
                   </p>
                   {active && !filter ? (
                     <div>
@@ -1313,12 +1308,6 @@ export default function Home() {
                       >
                         <Search size={16} /> 음악 찾기
                       </button>
-                      <button
-                        className="text-button"
-                        onClick={() => fileInput.current?.click()}
-                      >
-                        <Upload size={16} /> 파일 가져오기
-                      </button>
                     </div>
                   )}
                 </div>
@@ -1339,12 +1328,6 @@ export default function Home() {
                   </h1>
                   <p>검색부터 저장까지, Tunely 안에서.</p>
                 </div>
-                <button
-                  className="secondary"
-                  onClick={() => fileInput.current?.click()}
-                >
-                  <Upload size={16} /> 파일 가져오기
-                </button>
               </div>
               <form className="search-form" onSubmit={search}>
                 <Search size={22} />
@@ -1373,8 +1356,7 @@ export default function Home() {
                     disabled={searching}
                     onClick={() => {
                       setSearchSort(key);
-                      if (query.trim() && !/^https?:/.test(query.trim()))
-                        void search(undefined, key);
+                      if (lastQuery) void search(undefined, key, 20, lastQuery);
                     }}
                   >
                     {label}
@@ -1481,6 +1463,31 @@ export default function Home() {
                       </article>
                     ))}
                   </div>
+                  {lastQuery &&
+                    searchLimit < 60 &&
+                    results.length >= searchLimit && (
+                      <button
+                        className="secondary wide more-results"
+                        disabled={loadingMore || offline}
+                        onClick={() =>
+                          void search(
+                            undefined,
+                            searchSort,
+                            searchLimit + 20,
+                            lastQuery,
+                          )
+                        }
+                      >
+                        {loadingMore ? (
+                          <>
+                            <LoaderCircle className="spin" size={16} /> 더
+                            불러오는 중…
+                          </>
+                        ) : (
+                          `더 보기 (${searchLimit + 1}–${searchLimit + 20}번째)`
+                        )}
+                      </button>
+                    )}
                 </>
               ) : (
                 <div className="empty-state">
@@ -1808,14 +1815,6 @@ export default function Home() {
           )}
         </div>
       </main>
-      <input
-        ref={fileInput}
-        type="file"
-        accept="audio/*,.m4a,.mp3,.wav,.aac,.flac"
-        multiple
-        hidden
-        onChange={(e) => void importFiles(e.target.files)}
-      />
       <audio
         ref={audio}
         preload="metadata"
@@ -2034,6 +2033,22 @@ export default function Home() {
                 }}
               />
               <span>{fmt(duration)}</span>
+            </div>
+            <div className="skip-row">
+              <button
+                className="text-button"
+                aria-label="10초 뒤로"
+                onClick={() => seekBy(-10)}
+              >
+                <RotateCcw size={16} /> 10초
+              </button>
+              <button
+                className="text-button"
+                aria-label="10초 앞으로"
+                onClick={() => seekBy(10)}
+              >
+                10초 <RotateCw size={16} />
+              </button>
             </div>
             <div className="full-controls">
               <button

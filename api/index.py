@@ -20,6 +20,7 @@ class Login(BaseModel): password:str=Field(min_length=1,max_length=1024)
 class Search(BaseModel):
     query:str=Field(min_length=1,max_length=200)
     sort:Literal['relevance','date','views']='relevance'
+    limit:Literal[20,40,60]=20
 class JobIn(BaseModel):
     url:str=Field(max_length=2048)
     title:str=Field(default='',max_length=300)
@@ -135,7 +136,7 @@ async def stop(proc):
 @app.post('/api/search')
 async def search(body:Search,request:Request,token=Depends(auth)):
     rate('search:'+token,30)
-    proc=await spawn('search',body.query.strip(),body.sort)
+    proc=await spawn('search',body.query.strip(),body.sort,str(body.limit))
     try:
         async with asyncio.timeout(45):
             task=asyncio.create_task(proc.communicate())

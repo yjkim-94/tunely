@@ -1302,6 +1302,25 @@ small.agent-status {
 .full-player .seek {
   margin: 20px 0;
 }
+.skip-row {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0 -6px;
+}
+.skip-row .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.more-results {
+  margin-top: 22px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
 .full-controls {
   display: flex;
   justify-content: space-between;
