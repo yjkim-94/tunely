@@ -1,10 +1,10 @@
-const CACHE = "tunely-v1";
+const CACHE = "tunely-v2";
 self.addEventListener("install", (e) =>
   e.waitUntil(
     caches
       .open(CACHE)
       .then((c) =>
-        c.addAll(self.__TUNELY_PRECACHE__ || ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"]),
+        c.addAll(self.__TUNELY_PRECACHE__ || ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png", "/favicon.svg"]),
       ),
   ),
 );

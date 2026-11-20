@@ -5,7 +5,13 @@ export const metadata: Metadata = {
   description: "찾고, 담고, 어디서나 들어요.",
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, statusBarStyle: "default", title: "Tunely" },
-  icons: { apple: "/icon-192.png", icon: "/icon-192.png" },
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: { url: "/apple-touch-icon.png", sizes: "180x180" },
+  },
 };
 export const viewport: Viewport = {
   width: "device-width",
