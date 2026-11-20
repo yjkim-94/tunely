@@ -36,6 +36,22 @@ class Complete(BaseModel):
     duration:int=Field(ge=0,le=86400)
     source_codec:str|None=Field(default=None,max_length=20)
 class Fail(BaseModel): error:str=Field(max_length=500)
+VIDEO_ID=r'^[A-Za-z0-9_-]{11}$'
+class LibTrack(BaseModel):
+    video_id:str=Field(pattern=VIDEO_ID)
+    title:str=Field(max_length=300)
+    artist:str=Field(max_length=200)
+    duration:int=Field(ge=0,le=86400)
+    codec:str|None=Field(default=None,max_length=20)
+class LibPlaylist(BaseModel):
+    id:str=Field(min_length=1,max_length=64)
+    name:str=Field(max_length=100)
+    tracks:list[str]=Field(max_length=5000)
+class LibSync(BaseModel):
+    tracks:list[LibTrack]=Field(default=[],max_length=2000)
+    delete_tracks:list[str]=Field(default=[],max_length=2000)
+    playlists:list[LibPlaylist]=Field(default=[],max_length=200)
+    delete_playlists:list[str]=Field(default=[],max_length=200)
 class Uploads(BaseModel):
     parts:int=Field(ge=1,le=40)
     size:int=Field(ge=1)
@@ -77,7 +93,9 @@ async def protection(request:Request,call_next):
         # Explicit trusted origin is required in production. Browser requests always send Origin.
         expected=os.getenv('APP_ORIGIN')
         if origin and origin!=(expected or str(request.base_url).rstrip('/')): return Response(status_code=403)
-        if int(request.headers.get('content-length','0'))>8192: return Response(status_code=413)
+        # Library sync sends the whole list once on first backup; everything else is tiny.
+        limit=512*1024 if request.url.path=='/api/library/sync' else 8192
+        if int(request.headers.get('content-length','0'))>limit: return Response(status_code=413)
     response=await call_next(request)
     response.headers['Cache-Control']='no-store'
     response.headers['X-Content-Type-Options']='nosniff'
@@ -230,7 +248,13 @@ async def list_jobs(token=Depends(auth)):
 @app.post('/api/jobs/{id}/received')
 async def received(id:str,token=Depends(auth)):
     id=job_id(id)
-    # Nothing is kept after the iPhone has the file: drop both the files and the record.
+    rows=await sb('GET','/rest/v1/jobs',params={'select':'video_id,title,artist,duration,source_codec','id':'eq.'+id,'status':'eq.ready'})
+    if rows:
+        j=rows[0]
+        # Text-only library backup; keep an existing row so titles edited on the phone survive a restore.
+        await sb('POST','/rest/v1/library_tracks',json={'video_id':j['video_id'],'title':j['title'],'artist':j['artist'],'duration':j['duration'],'codec':j['source_codec']},
+                 headers={'Prefer':'resolution=ignore-duplicates'})
+    # The audio is on the phone now: drop the files and the job record.
     await remove_files([id])
     await sb('DELETE','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.ready'})
     return {'ok':True}
@@ -310,3 +334,29 @@ async def cleanup(request:Request):
         await remove_files(ids[i:i+50])
         await sb('DELETE','/rest/v1/jobs',params={'id':'in.('+','.join(ids[i:i+50])+')'})
     return {'deleted':len(ids)}
+
+# ---------------------------------------------------------------------------
+# Library backup: titles, artists and playlists only (never audio), so the
+# library can be re-requested after the phone loses its app data.
+@app.get('/api/library')
+async def library(token=Depends(auth)):
+    tracks=await sb('GET','/rest/v1/library_tracks',params={'select':'video_id,title,artist,duration,codec,added_at','order':'added_at.asc'})
+    playlists=await sb('GET','/rest/v1/library_playlists',params={'select':'id,name,tracks,updated_at','order':'updated_at.asc'})
+    return {'tracks':tracks,'playlists':playlists}
+
+def in_list(values):
+    return 'in.('+','.join('"'+v.replace('"','')+'"' for v in values)+')'
+
+@app.post('/api/library/sync')
+async def library_sync(body:LibSync,token=Depends(auth)):
+    rate('library:'+token,120)
+    for t in body.delete_tracks:
+        if not re.fullmatch(VIDEO_ID,t): raise HTTPException(400,'잘못된 곡 ID입니다.')
+    merge={'Prefer':'resolution=merge-duplicates'}
+    if body.tracks: await sb('POST','/rest/v1/library_tracks',json=[t.model_dump() for t in body.tracks],headers=merge)
+    if body.playlists: await sb('POST','/rest/v1/library_playlists',json=[p.model_dump() for p in body.playlists],headers=merge)
+    for i in range(0,len(body.delete_tracks),100):
+        await sb('DELETE','/rest/v1/library_tracks',params={'video_id':in_list(body.delete_tracks[i:i+100])})
+    for i in range(0,len(body.delete_playlists),100):
+        await sb('DELETE','/rest/v1/library_playlists',params={'id':in_list(body.delete_playlists[i:i+100])})
+    return {'ok':True}

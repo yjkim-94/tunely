@@ -40,6 +40,24 @@ import {
   type Track,
   type Playlist,
 } from "./db";
+import {
+  flushLibrary,
+  initialBackup,
+  installSyncHooks,
+  onSyncChange,
+  setSyncPoster,
+  syncStatus,
+} from "./sync";
+
+if (typeof window !== "undefined") installSyncHooks();
+type LibTrack = {
+  video_id: string;
+  title: string;
+  artist: string;
+  duration: number;
+  codec?: string | null;
+};
+type LibPlaylist = { id: string; name: string; tracks: string[] };
 
 type Result = Omit<Track, "audio" | "added"> & {
   views?: number | null;
@@ -218,7 +236,17 @@ export default function Home() {
     [loadingMore, setLoadingMore] = useState(false),
     [picked, setPicked] = useState<string[]>([]),
     [jobs, setJobs] = useState<Job[]>([]),
-    [agentOnline, setAgentOnline] = useState<boolean>();
+    [agentOnline, setAgentOnline] = useState<boolean>(),
+    [syncInfo, setSyncInfo] = useState({ pending: 0, lastSync: 0 }),
+    [restore, setRestore] = useState<{
+      tracks: LibTrack[];
+      playlists: LibPlaylist[];
+      total: number;
+    } | null>(null),
+    [restorePicks, setRestorePicks] = useState<string[]>([]),
+    [restoreBusy, setRestoreBusy] = useState(false);
+  // Titles/artists from the backup win over YouTube's when a track is restored.
+  const serverMeta = useRef(new Map<string, LibTrack>());
   const [selected, setSelected] = useState<string[]>([]),
     [selectionMode, setSelectionMode] = useState(false),
     [notice, setNotice] = useState(""),
@@ -627,8 +655,9 @@ export default function Home() {
           if (!(await db.tracks.get(job.video_id)))
             await db.tracks.add({
               id: job.video_id,
-              title: job.title,
-              artist: job.artist,
+              title: serverMeta.current.get(job.video_id)?.title || job.title,
+              artist:
+                serverMeta.current.get(job.video_id)?.artist || job.artist,
               duration: job.duration,
               url: "https://www.youtube.com/watch?v=" + job.video_id,
               codec: job.source_codec || undefined,
@@ -653,6 +682,78 @@ export default function Home() {
     },
     [refresh],
   );
+  useEffect(() => {
+    if (!auth) return;
+    setSyncPoster((body) => api("library/sync", body));
+    const update = () => setSyncInfo(syncStatus());
+    const off = onSyncChange(update);
+    update();
+    void initialBackup().then(flushLibrary);
+    const retry = () => {
+      if (document.visibilityState === "visible") void flushLibrary();
+    };
+    window.addEventListener("online", retry);
+    document.addEventListener("visibilitychange", retry);
+    return () => {
+      off();
+      window.removeEventListener("online", retry);
+      document.removeEventListener("visibilitychange", retry);
+    };
+  }, [auth]);
+  async function openRestore() {
+    setRestoreBusy(true);
+    try {
+      await flushLibrary();
+      const d: { tracks: LibTrack[]; playlists: LibPlaylist[] } = await (
+        await api("library")
+      ).json();
+      d.tracks.forEach((t) => serverMeta.current.set(t.video_id, t));
+      const have = new Set(await db.tracks.toCollection().primaryKeys());
+      const lists = new Set(await db.playlists.toCollection().primaryKeys());
+      const missing = d.tracks.filter((t) => !have.has(t.video_id));
+      setRestore({
+        tracks: missing,
+        playlists: d.playlists.filter((p) => !lists.has(p.id)),
+        total: d.tracks.length,
+      });
+      setRestorePicks(missing.map((t) => t.video_id));
+    } catch (e) {
+      setNotice(errorText(e));
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+  async function runRestore() {
+    if (!restore) return;
+    setRestoreBusy(true);
+    try {
+      // Playlists come back right away; their songs appear as each one is received.
+      for (const pl of restore.playlists)
+        if (!(await db.playlists.get(pl.id)))
+          await db.playlists.add({ id: pl.id, name: pl.name, tracks: pl.tracks });
+      await refresh();
+      const picked = restore.tracks.filter((t) =>
+        restorePicks.includes(t.video_id),
+      );
+      if (picked.length)
+        await enqueue(
+          picked.map((t) => ({
+            id: t.video_id,
+            title: t.title,
+            artist: t.artist,
+            duration: t.duration,
+            url: "https://www.youtube.com/watch?v=" + t.video_id,
+          })),
+        );
+      else if (restore.playlists.length)
+        setNotice(`재생목록 ${restore.playlists.length}개를 복구했어요.`);
+      setRestore(null);
+    } catch (e) {
+      setNotice(errorText(e));
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
   const syncJobs = useCallback(async () => {
     try {
       const r = await api("jobs");
@@ -1676,6 +1777,34 @@ export default function Home() {
                 </div>
               </div>
               <div className="settings-card">
+                <h3>보관함 백업</h3>
+                <p>
+                  곡 제목·아티스트와 재생목록만 서버에 백업해요. 음원은
+                  백업하지 않아요.
+                </p>
+                <small>
+                  {syncInfo.pending
+                    ? `서버에 반영할 변경 ${syncInfo.pending}건 · 연결되면 자동으로 보내요`
+                    : syncInfo.lastSync
+                      ? `마지막 백업 ${new Date(syncInfo.lastSync).toLocaleString("ko-KR")}`
+                      : "아직 백업하지 않았어요."}
+                </small>
+                <div className="setting-actions">
+                  <button
+                    className="secondary"
+                    disabled={restoreBusy || offline}
+                    onClick={() => void openRestore()}
+                  >
+                    {restoreBusy ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <ArrowDownToLine size={15} />
+                    )}
+                    보관함 복구
+                  </button>
+                </div>
+              </div>
+              <div className="settings-card">
                 <h3>iPhone에 설치하기</h3>
                 <p>
                   Safari에서 공유 버튼 → ‘홈 화면에 추가’를 선택하세요.
@@ -2348,6 +2477,107 @@ export default function Home() {
               onClick={() => void addPicked()}
             >
               {picks.length ? `${picks.length}곡 담기` : "곡을 선택하세요"}
+            </button>
+          </div>
+        </div>
+      )}
+      {restore && (
+        <div className="modal-backdrop">
+          <div
+            className="dialog picker"
+            role="dialog"
+            aria-modal="true"
+            aria-label="보관함 복구"
+          >
+            <div className="modal-heading">
+              <h2>보관함 복구</h2>
+              <button
+                className="icon"
+                aria-label="닫기"
+                onClick={() => setRestore(null)}
+              >
+                <X />
+              </button>
+            </div>
+            <p className="restore-summary">
+              백업된 {restore.total}곡 중 이 기기에 없는 곡{" "}
+              {restore.tracks.length}개
+              {restore.playlists.length
+                ? ` · 없는 재생목록 ${restore.playlists.length}개`
+                : ""}
+              . 고른 곡은 PC가 다시 내려받아 보내요.
+            </p>
+            {restore.tracks.length > 0 && (
+              <button
+                className="text-button"
+                onClick={() =>
+                  setRestorePicks(
+                    restorePicks.length === restore.tracks.length
+                      ? []
+                      : restore.tracks.map((t) => t.video_id),
+                  )
+                }
+              >
+                {restorePicks.length === restore.tracks.length
+                  ? "모두 해제"
+                  : "모두 선택"}
+              </button>
+            )}
+            <div className="picker-list">
+              {restore.tracks.map((t) => {
+                const on = restorePicks.includes(t.video_id);
+                return (
+                  <button
+                    key={t.video_id}
+                    className={"pick-row " + (on ? "on" : "")}
+                    onClick={() =>
+                      setRestorePicks((s) =>
+                        s.includes(t.video_id)
+                          ? s.filter((x) => x !== t.video_id)
+                          : [...s, t.video_id],
+                      )
+                    }
+                  >
+                    <Cover
+                      track={{
+                        id: t.video_id,
+                        thumbnail: `https://i.ytimg.com/vi/${t.video_id}/hqdefault.jpg`,
+                      }}
+                    />
+                    <span>
+                      <b>{t.title}</b>
+                      <small>
+                        {t.artist} · {fmt(t.duration)}
+                      </small>
+                    </span>
+                    <span className="pick-check">
+                      {on && <Check size={14} />}
+                    </span>
+                  </button>
+                );
+              })}
+              {!restore.tracks.length && (
+                <p>
+                  {restore.total
+                    ? "백업된 곡이 모두 이 기기에 있어요."
+                    : "아직 백업된 곡이 없어요."}
+                </p>
+              )}
+            </div>
+            <button
+              className="primary wide"
+              disabled={
+                restoreBusy ||
+                offline ||
+                (!restorePicks.length && !restore.playlists.length)
+              }
+              onClick={() => void runRestore()}
+            >
+              {restorePicks.length
+                ? `${restorePicks.length}곡 다시 받기${restore.playlists.length ? " · 재생목록 복구" : ""}`
+                : restore.playlists.length
+                  ? "재생목록만 복구"
+                  : "복구할 항목이 없어요"}
             </button>
           </div>
         </div>

@@ -1212,6 +1212,12 @@ small.agent-status {
 .list-choice svg:last-child {
   margin-left: auto;
 }
+.restore-summary {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+  margin: 0 0 6px;
+}
 .picker > input {
   width: 100%;
 }
