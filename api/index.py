@@ -314,6 +314,7 @@ async def agent_progress(request:Request,id:str,body:Progress,_=Depends(agent)):
 async def agent_complete(request:Request,id:str,body:Complete,_=Depends(agent)):
     await agent_job(id);await touch_agent(request)
     await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'ready','title':body.title,'artist':body.artist,'duration':body.duration,'source_codec':body.source_codec,'stage':'전송 대기','progress':100,'ready_at':'now'})
+    await notify({'title':'저장 준비 완료','body':f'{body.title} · Tunely를 열면 보관함에 담아요.','tag':id})
     return {'ok':True}
 
 @app.post('/api/agent/jobs/{id}/fail')
@@ -321,6 +322,9 @@ async def agent_fail(request:Request,id:str,body:Fail,_=Depends(agent)):
     await agent_job(id);await touch_agent(request)
     await sb('PATCH','/rest/v1/jobs',params={'id':'eq.'+id,'status':'eq.processing'},json={'status':'failed','error':re.sub(r'\S*\?token=\S+','[URL]',body.error),'stage':None})
     await remove_files([id])
+    rows=await sb('GET','/rest/v1/jobs',params={'select':'title','id':'eq.'+id})
+    title=(rows[0].get('title') if rows else None) or '곡'
+    await notify({'title':'저장 실패','body':f'{title} · 앱에서 다시 시도할 수 있어요.','tag':id})
     return {'ok':True}
 
 @app.get('/api/cron/cleanup')
@@ -360,3 +364,66 @@ async def library_sync(body:LibSync,token=Depends(auth)):
     for i in range(0,len(body.delete_playlists),100):
         await sb('DELETE','/rest/v1/library_playlists',params={'id':in_list(body.delete_playlists[i:i+100])})
     return {'ok':True}
+
+# ---------------------------------------------------------------------------
+# Web Push: tell the phone a song is ready. Only installed PWAs (iOS 16.4+) can subscribe.
+class PushKeys(BaseModel):
+    p256dh:str=Field(min_length=10,max_length=200)
+    auth:str=Field(min_length=4,max_length=100)
+class PushSub(BaseModel):
+    endpoint:str=Field(max_length=1024)
+    keys:PushKeys
+class PushEndpoint(BaseModel): endpoint:str=Field(max_length=1024)
+
+def push_ready():
+    from backend import push
+    if not push.configured(): raise HTTPException(503,'알림 설정(VAPID 키)이 필요합니다.')
+    return push
+
+@app.get('/api/push/key')
+async def push_key(token=Depends(auth)):
+    return {'key':push_ready().public_key()}
+
+@app.post('/api/push/subscribe')
+async def push_subscribe(body:PushSub,token=Depends(auth)):
+    push=push_ready()
+    if not push.allowed_endpoint(body.endpoint): raise HTTPException(400,'지원하지 않는 알림 주소입니다.')
+    await sb('POST','/rest/v1/push_subscriptions',json={'endpoint':body.endpoint,'p256dh':body.keys.p256dh,'auth':body.keys.auth},headers={'Prefer':'resolution=merge-duplicates'})
+    return {'ok':True}
+
+@app.post('/api/push/unsubscribe')
+async def push_unsubscribe(body:PushEndpoint,token=Depends(auth)):
+    await sb('DELETE','/rest/v1/push_subscriptions',params={'endpoint':'eq.'+body.endpoint})
+    return {'ok':True}
+
+@app.post('/api/push/test')
+async def push_test(token=Depends(auth)):
+    rate('push:'+token,5)
+    sent=await notify({'title':'Tunely 알림','body':'알림이 잘 도착했어요.','tag':'test'})
+    if not sent: raise HTTPException(404,'알림을 받을 기기가 없습니다. 이 기기에서 알림을 다시 켜 주세요.')
+    return {'sent':sent}
+
+async def notify(message):
+    """Send to every subscription; never fails the caller. Expired subscriptions are removed."""
+    try:
+        from backend import push
+        if not push.configured(): return 0
+        subs=await sb('GET','/rest/v1/push_subscriptions',params={'select':'endpoint,p256dh,auth'})
+        subject=os.getenv('APP_ORIGIN') or 'https://tunely-play.vercel.app'
+        import httpx
+        sent=0
+        async with httpx.AsyncClient(timeout=10) as c:
+            for sub in subs:
+                if not push.allowed_endpoint(sub['endpoint']): continue
+                url,headers,body=push.request(sub,message,subject)
+                try: r=await c.post(url,headers=headers,content=body)
+                except httpx.HTTPError as e:
+                    print('push error',type(e).__name__,file=sys.stderr,flush=True); continue
+                if r.status_code in (404,410):
+                    await sb('DELETE','/rest/v1/push_subscriptions',params={'endpoint':'eq.'+sub['endpoint']})
+                elif r.status_code>=400: print('push',r.status_code,r.text[:200],file=sys.stderr,flush=True)
+                else: sent+=1
+        return sent
+    except Exception as e:
+        print('notify failed',type(e).__name__,str(e)[:200],file=sys.stderr,flush=True)
+        return 0
