@@ -266,6 +266,9 @@ export default function Home() {
   // iOS Safari keeps media volume read-only, so fades only work elsewhere.
   const [canFade, setCanFade] = useState(true);
   useEffect(() => {
+    canFadeRef.current = canFade;
+  }, [canFade]);
+  useEffect(() => {
     const probe = new Audio();
     probe.volume = 0.5;
     setCanFade(Math.abs(probe.volume - 0.5) < 0.01);
@@ -1164,26 +1167,44 @@ export default function Home() {
   enforceRef.current = { enforce, start: rng.start, end: rng.end };
   const nextRef = useRef(next);
   nextRef.current = next;
+  const advanced = useRef(false);
+  const canFadeRef = useRef(true);
+  /** Keep playback inside the saved range. Returns true once it moved on at the end. */
+  const checkRange = () => {
+    const a = audio.current;
+    if (!a) return false;
+    const { enforce: on, start, end } = enforceRef.current;
+    if (!on || end <= start) {
+      if (a.volume !== 1) a.volume = 1;
+      return false;
+    }
+    const t = a.currentTime;
+    if (t < end - 1) advanced.current = false; // e.g. repeat-one jumped back
+    if (t < start - 0.25) {
+      a.currentTime = start;
+    } else if (t >= end - 0.05) {
+      // timeupdate can fire again before the next track loads: advance only once
+      if (advanced.current) return true;
+      advanced.current = true;
+      a.volume = 1;
+      nextRef.current(1, true);
+      return true;
+    } else if (canFadeRef.current) {
+      const fadeIn = start > 0 ? (t - start) / 0.5 : 1;
+      const fadeOut = (end - t) / 1;
+      a.volume = Math.max(0, Math.min(1, fadeIn, fadeOut));
+    }
+    return false;
+  };
   useEffect(() => {
     const a = audio.current;
     if (!a) return;
     if (!playing) return;
     let raf = 0;
+    // rAF gives smooth fades while visible; it stops when the screen is locked,
+    // so onTimeUpdate runs the same check in the background.
     const tick = () => {
-      const { enforce: on, start, end } = enforceRef.current;
-      if (on && end > start) {
-        const t = a.currentTime;
-        if (t < start - 0.25) a.currentTime = start;
-        else if (t >= end - 0.03) {
-          a.volume = 1;
-          nextRef.current(1, true);
-          return;
-        } else if (canFade) {
-          const fadeIn = start > 0 ? (t - start) / 0.5 : 1;
-          const fadeOut = (end - t) / 1;
-          a.volume = Math.max(0, Math.min(1, fadeIn, fadeOut));
-        }
-      } else if (a.volume !== 1) a.volume = 1;
+      if (checkRange()) return;
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -2318,6 +2339,7 @@ export default function Home() {
         onLoadedMetadata={() => {
           const a = audio.current;
           if (!a) return;
+          advanced.current = false;
           setDuration(Number.isFinite(a.duration) ? a.duration : 0);
           if (current && !current.duration && Number.isFinite(a.duration))
             void db.tracks
@@ -2343,6 +2365,7 @@ export default function Home() {
           const a = audio.current;
           if (!a) return;
           if (a.readyState < 1 || a.error) return;
+          checkRange();
           lastGood.current = a.currentTime;
           setPosition(a.currentTime);
           savedRef.current = { ...savedRef.current, position: a.currentTime };
