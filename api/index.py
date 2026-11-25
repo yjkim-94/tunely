@@ -97,7 +97,7 @@ async def protection(request:Request,call_next):
         expected=os.getenv('APP_ORIGIN')
         if origin and origin!=(expected or str(request.base_url).rstrip('/')): return Response(status_code=403)
         # Library sync sends the whole list once on first backup; everything else is tiny.
-        limit=512*1024 if request.url.path=='/api/library/sync' else 8192
+        limit=512*1024 if request.url.path=='/api/library/sync' else 128*1024 if request.url.path=='/api/debug/playback' else 8192
         if int(request.headers.get('content-length','0'))>limit: return Response(status_code=413)
     response=await call_next(request)
     response.headers['Cache-Control']='no-store'
@@ -437,3 +437,15 @@ async def notify(message):
     except Exception as e:
         print('notify failed',type(e).__name__,str(e)[:200],file=sys.stderr,flush=True)
         return 0
+
+# ---------------------------------------------------------------------------
+# Temporary playback diagnostics (next track sometimes does not start on iPhone).
+class PlaybackLog(BaseModel):
+    device:str=Field(default='',max_length=300)
+    events:list[dict]=Field(max_length=500)
+
+@app.post('/api/debug/playback')
+async def debug_playback(body:PlaybackLog,token=Depends(auth)):
+    rate('playlog:'+token,30)
+    await sb('POST','/rest/v1/playback_logs',json={'device':body.device,'events':body.events})
+    return {'ok':True}

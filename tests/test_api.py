@@ -174,6 +174,13 @@ class SecurityTests(unittest.TestCase):
    self.assertEqual(self.c.post(f'/api/agent/jobs/{JOB}/complete',json={'title':'곡','artist':'a','duration':1},headers=AGENT).status_code,200)
   self.assertEqual(len(posted),2);self.assertTrue(posted[0][1]['Authorization'].startswith('vapid t='))
   self.assertIn(('DELETE','/rest/v1/push_subscriptions'),[c[:2] for c in fake.calls])
+ def test_debug_playback_log(self):
+  self.assertEqual(self.c.post('/api/debug/playback',json={'events':[]}).status_code,401)
+  self.sign_in();fake=FakeSupabase()
+  with patch('api.index.sb',fake):
+   self.assertEqual(self.c.post('/api/debug/playback',json={'device':'iPhone','events':[{'t':1,'e':'ended','h':1}]}).status_code,200)
+   self.assertEqual(self.c.post('/api/debug/playback',json={'events':[{}]*501}).status_code,422)
+  self.assertEqual([c for c in fake.calls if c[0]=='POST'][0][2]['json']['events'][0]['e'],'ended')
  def test_agent_requires_token(self):
   with patch('api.index.sb',FakeSupabase()):
    self.assertEqual(self.c.post('/api/agent/claim').status_code,401)

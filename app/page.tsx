@@ -60,6 +60,7 @@ import {
   syncStatus,
 } from "./sync";
 import { Cover } from "./cover";
+import { flushPlaylog, plog, setPlaylogPoster } from "./playlog";
 import { TrimSheet } from "./trim";
 
 if (typeof window !== "undefined") installSyncHooks();
@@ -461,15 +462,25 @@ export default function Home() {
     if (!current || !audio.current) return;
     const a = audio.current;
     let alive = true;
+    const loadStarted = Date.now();
+    plog("load-start", { id: current.id, parts: current.parts || 0 });
     void trackAudio(current)
       .then((blob) => {
+        plog("src-set", {
+          id: current.id,
+          ms: Date.now() - loadStarted,
+          alive,
+        });
         if (!alive) return;
         if (blobUrl.current) URL.revokeObjectURL(blobUrl.current);
         blobUrl.current = URL.createObjectURL(blob);
         a.src = blobUrl.current;
         a.playbackRate = savedRef.current.speed;
       })
-      .catch((e) => setNotice(errorText(e)));
+      .catch((e) => {
+        plog("load-failed", { id: current.id, msg: errorText(e) });
+        setNotice(errorText(e));
+      });
     return () => {
       alive = false;
       a.pause();
@@ -530,7 +541,10 @@ export default function Home() {
   const next = useCallback(
     (delta = 1, ended = false) => {
       const ids = queue.filter((id) => tracks.some((t) => t.id === id));
-      if (!ids.length) return;
+      if (!ids.length) {
+        plog("next-skip", { why: "empty-queue", ended });
+        return;
+      }
       if (ended && repeat === "one") {
         if (audio.current) {
           const r = trackRange(current);
@@ -548,11 +562,26 @@ export default function Home() {
         i = ids.indexOf(options[Math.floor(Math.random() * options.length)]);
       }
       if (i >= ids.length) {
-        if (ended && repeat !== "all") return;
+        if (ended && repeat !== "all") {
+          plog("next-skip", {
+            why: "queue-end",
+            ended,
+            from: current?.id,
+            q: ids.length,
+          });
+          return;
+        }
         i = 0;
       }
       if (i < 0) i = ids.length - 1;
       const t = tracks.find((t) => t.id === ids[i]);
+      plog("next", {
+        delta,
+        ended,
+        from: current?.id,
+        to: t?.id,
+        q: ids.length,
+      });
       if (t) {
         playOnLoad.current = true;
         void playTrack(t);
@@ -769,6 +798,28 @@ export default function Home() {
     },
     [refresh],
   );
+  useEffect(() => {
+    if (!auth) return;
+    setPlaylogPoster((events) =>
+      api("debug/playback", {
+        device: navigator.userAgent.slice(0, 280),
+        events,
+      }),
+    );
+    const vis = () => {
+      plog(document.hidden ? "hidden" : "visible", {
+        id: audio.current && !audio.current.paused ? "playing" : "paused",
+      });
+      void flushPlaylog();
+    };
+    document.addEventListener("visibilitychange", vis);
+    const timer = setInterval(() => void flushPlaylog(), 60000);
+    void flushPlaylog();
+    return () => {
+      document.removeEventListener("visibilitychange", vis);
+      clearInterval(timer);
+    };
+  }, [auth]);
   useEffect(() => {
     if (!auth) return;
     setSyncPoster((body) => api("library/sync", body));
@@ -1186,6 +1237,7 @@ export default function Home() {
       // timeupdate can fire again before the next track loads: advance only once
       if (advanced.current) return true;
       advanced.current = true;
+      plog("range-end", { at: Math.round(t * 10) / 10, end });
       a.volume = 1;
       nextRef.current(1, true);
       return true;
@@ -2332,7 +2384,39 @@ export default function Home() {
         preload="metadata"
         playsInline
         onPlay={() => setPlaying(true)}
+        onPlaying={() =>
+          plog("playing", {
+            id: current?.id,
+            at: Math.round((audio.current?.currentTime || 0) * 10) / 10,
+          })
+        }
+        onWaiting={() => {
+          const a = audio.current;
+          plog("waiting", {
+            id: current?.id,
+            at: a && Math.round(a.currentTime * 10) / 10,
+            dur: a && Math.round(a.duration * 10) / 10,
+          });
+        }}
+        onStalled={() => {
+          const a = audio.current;
+          plog("stalled", {
+            id: current?.id,
+            at: a && Math.round(a.currentTime * 10) / 10,
+            dur: a && Math.round(a.duration * 10) / 10,
+          });
+        }}
         onPause={() => {
+          const a = audio.current;
+          if (a)
+            plog("pause", {
+              id: current?.id,
+              at: Math.round(a.currentTime * 10) / 10,
+              dur: Math.round(a.duration * 10) / 10,
+              ended: a.ended,
+              nearEnd:
+                Number.isFinite(a.duration) && a.duration - a.currentTime < 2,
+            });
           setPlaying(false);
           persistPlayer();
         }}
@@ -2356,9 +2440,22 @@ export default function Home() {
             (a.currentTime < r.start - 0.05 || a.currentTime >= r.end - 0.5)
           )
             a.currentTime = r.start;
+          plog("loadedmetadata", {
+            id: current?.id,
+            dur: Math.round(a.duration * 10) / 10,
+            autoplay: playOnLoad.current,
+          });
           if (playOnLoad.current) {
             playOnLoad.current = false;
-            void a.play().catch(() => setNotice("재생 버튼을 눌러 주세요."));
+            void a.play().catch((e: unknown) => {
+              const err = e as { name?: string; message?: string };
+              plog("play-rejected", {
+                id: current?.id,
+                name: err?.name,
+                msg: String(err?.message || "").slice(0, 120),
+              });
+              setNotice("재생 버튼을 눌러 주세요.");
+            });
           }
         }}
         onTimeUpdate={() => {
@@ -2392,8 +2489,21 @@ export default function Home() {
             } catch {}
           }
         }}
-        onEnded={() => next(1, true)}
+        onEnded={() => {
+          const a = audio.current;
+          plog("ended", {
+            id: current?.id,
+            at: a && Math.round(a.currentTime * 10) / 10,
+            dur: a && Math.round(a.duration * 10) / 10,
+          });
+          next(1, true);
+        }}
         onError={() => {
+          plog("error", {
+            id: current?.id,
+            code: audio.current?.error?.code,
+            retried: audioRetried.current,
+          });
           if (!current) return;
           // A stale Blob URL (see reloadAudio) looks like a format error: retry once from the DB.
           if (!audioRetried.current) {
